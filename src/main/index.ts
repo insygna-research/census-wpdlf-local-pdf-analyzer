@@ -1399,6 +1399,13 @@ export function registerIpcHandlers(): void {
     if (path.extname(targetPath).toLowerCase() !== '.pdf') {
       return { error: 'PDF 파일만 열 수 있습니다.' };
     }
+    // QA20(B-MED): UNC(`\\server\share`) 차단 — 드롭 경로(will-navigate)는 "UNC 경로 차단:
+    // 네트워크 읽기 방지"를 이미 하는데 이 경로만 빠져 있던 비대칭. 손상된 렌더러가 원격 경로를
+    // 넘기면 lstat 만으로 Windows SMB 클라이언트가 깨어나 공격자 서버에 NTLM 자격증명을
+    // 흘린다(오프라인 크래킹·릴레이). 널바이트도 함께 거부(경로 절단 방어).
+    if (targetPath.startsWith('\\\\') || targetPath.startsWith('//') || targetPath.includes('\0')) {
+      return { error: '잘못된 경로입니다.' };
+    }
     try {
       const lstat = await fsp.lstat(targetPath);
       if (lstat.isSymbolicLink()) return { error: '심볼릭 링크는 열 수 없습니다.' };

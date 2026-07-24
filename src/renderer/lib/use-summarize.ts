@@ -692,6 +692,12 @@ export function useSummarize() {
       // QA19(B-MED): 토큰 수신은 무진전 감시견의 진전 신호다 — 여기서 lastProgressAt 를 갱신해야
       // 정상 진행 중인 요약이 무진전으로 오판돼 중단되지 않는다.
       const guardedAppend = (s: string) => { if (stillOwns()) { lastProgressAt = Date.now(); appendStream(s); } };
+      // QA20(A-MED, v0.31.31 회귀): 진전 신호를 토큰 수신에만 두면 **이미지 분석 단계가 통째로
+      // 무진전으로 오판**된다 — analyzeDocumentImages 는 append 를 한 번도 하지 않고 진행률만
+      // 갱신하기 때문이다(이미지 최대 50장, 로컬 Ollama 기준 수 분). 그 결과 기본 설정
+      // (enableImageAnalysis=true)에서 이미지가 조금만 많아도 요약이 시작조차 못 하고 2분에
+      // 죽었다. 진행률 갱신도 동등한 진전 신호로 취급한다(이미지 배치·청크 전환 모두 여기를 지난다).
+      const progressSetter = (info: ProgressInfo) => { lastProgressAt = Date.now(); setProgressInfo(info); };
 
       const trackSummarize = (text: string, type: DefaultSummaryType) => {
         // clientRef 비교로 stale closure 방지: abort 후 재요약 시 이전 client 토큰 무시.
@@ -762,7 +768,7 @@ export function useSummarize() {
             }
           }, 250);
           const imageDescriptions = await analyzeDocumentImages(
-            doc, client, setProgress, setProgressInfo, startTime,
+            doc, client, setProgress, progressSetter, startTime,
             isRunAborted,
             currentSettings.provider,
             (id) => visionInFlight.add(id),
@@ -866,14 +872,14 @@ export function useSummarize() {
         }
         // 전략 분기: 'chunked'=문서 전체 청크+통합(긴 문서 커버), 그 외(미지정 포함)=단일 패스.
         if (template.strategy === 'chunked') {
-          await summarizeCustomChunked(docWithImages, template, currentSettings, trackCustom, checkTimeout, isCancelled, guardedAppend, setProgress, setProgressInfo, startTime, progressOffset);
+          await summarizeCustomChunked(docWithImages, template, currentSettings, trackCustom, checkTimeout, isCancelled, guardedAppend, setProgress, progressSetter, startTime, progressOffset);
         } else {
-          await summarizeCustom(docWithImages, template, trackCustom, checkTimeout, isCancelled, guardedAppend, setProgress, setProgressInfo, startTime, progressOffset);
+          await summarizeCustom(docWithImages, template, trackCustom, checkTimeout, isCancelled, guardedAppend, setProgress, progressSetter, startTime, progressOffset);
         }
       } else if (currentSummaryType === 'chapter' && docWithImages.chapters.length > 1) {
-        await summarizeByChapter(docWithImages, currentSettings, trackSummarize, checkTimeout, isCancelled, guardedAppend, setProgress, setProgressInfo, startTime, progressOffset);
+        await summarizeByChapter(docWithImages, currentSettings, trackSummarize, checkTimeout, isCancelled, guardedAppend, setProgress, progressSetter, startTime, progressOffset);
       } else {
-        await summarizeFull(docWithImages, currentSummaryType, currentSettings, trackSummarize, checkTimeout, isCancelled, guardedAppend, setProgress, setProgressInfo, startTime, progressOffset);
+        await summarizeFull(docWithImages, currentSummaryType, currentSettings, trackSummarize, checkTimeout, isCancelled, guardedAppend, setProgress, progressSetter, startTime, progressOffset);
       }
 
       const durationMs = Date.now() - startTime;

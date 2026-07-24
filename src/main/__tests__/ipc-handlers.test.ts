@@ -659,6 +659,25 @@ describe('file:open-path (최근목록 재오픈 보안 가드)', () => {
     expect(H.fsp.lstat).not.toHaveBeenCalled();
   });
 
+  // QA20(B-MED): UNC 는 lstat 만으로 SMB 클라이언트를 깨워 원격 서버에 NTLM 자격증명을 흘린다.
+  // 드롭 경로(will-navigate)는 이미 UNC 를 막고 있었는데 이 경로만 빠져 있던 비대칭 — fs 접근
+  // 이전에 차단해야 의미가 있다(lstat 자체가 인증 시도이므로).
+  it('UNC 경로 거부 (fs 접근 없음 — NTLM 유출 방지)', async () => {
+    H.fsp.lstat.mockClear();
+    for (const p of ['\\\\attacker.example\\share\\a.pdf', '//attacker.example/share/a.pdf']) {
+      const r = await invoke('file:open-path', p) as { error: string };
+      expect(r.error, p).toBeTruthy();
+    }
+    expect(H.fsp.lstat, 'lstat 자체가 원격 인증을 유발하므로 호출되면 안 된다').not.toHaveBeenCalled();
+  });
+
+  it('널바이트 포함 경로 거부 (fs 접근 없음)', async () => {
+    H.fsp.lstat.mockClear();
+    const r = await invoke('file:open-path', '/x/a.pdf\0.txt') as { error: string };
+    expect(r.error).toBeTruthy();
+    expect(H.fsp.lstat).not.toHaveBeenCalled();
+  });
+
   it('심볼릭 링크 거부 (readFile 미도달)', async () => {
     H.fsp.lstat.mockResolvedValue({ isSymbolicLink: () => true });
     H.fsp.readFile.mockClear();

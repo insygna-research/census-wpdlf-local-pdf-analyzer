@@ -42,4 +42,25 @@ describe('isSummaryTimedOut', () => {
   it('요약 시작 직후(진전 전)에는 중단하지 않는다', () => {
     expect(isSummaryTimedOut(0, 0, 0, IDLE, MAX)).toBe(false);
   });
+
+  // QA20(A-MED, v0.31.31 회귀 재발 방지): 이미지 분석 단계는 토큰을 한 글자도 append 하지 않고
+  // 진행률만 갱신한다. 진전 신호를 토큰에만 두면 이 구간 전체가 무진전으로 오판돼, 기본 설정
+  // (이미지 분석 ON)에서 정상 요약이 2분에 죽었다. "진행률 갱신 = 진전"이라는 계약을 고정한다.
+  it('이미지 분석처럼 토큰 없이 진행률만 갱신되는 구간도 진전으로 인정돼야 한다', () => {
+    const start = 0;
+    // 이미지 배치가 90초 간격으로 진행률만 갱신하며 6분간 지속되는 상황
+    let lastProgress = start;
+    for (const now of [90_000, 180_000, 270_000, 360_000]) {
+      // 각 시점 직전에 진행률 갱신이 있었다면(=lastProgress 가 따라온다) 중단되지 않는다
+      expect(isSummaryTimedOut(now, start, lastProgress, IDLE, MAX)).toBe(false);
+      lastProgress = now; // 진행률 갱신 = 진전 신호
+    }
+  });
+
+  it('진행률 갱신이 idle 상한을 넘어 끊기면 그때는 중단한다(진짜 정지 감지는 유지)', () => {
+    const start = 0;
+    const lastProgress = 90_000;                 // 마지막 진행률 갱신
+    const now = lastProgress + IDLE + 1;         // 그 뒤로 2분 넘게 아무 진전 없음
+    expect(isSummaryTimedOut(now, start, lastProgress, IDLE, MAX)).toBe(true);
+  });
 });

@@ -72,9 +72,13 @@ export default function App() {
   // 표시 — 사용자가 요청하지 않은 백그라운드 작업으로 메인 화면을 어지럽히지 않기 위함.
   const [updateReadyVersion, setUpdateReadyVersion] = useState<string | null>(null);
   const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false);
-  // 설치는 앱을 종료시키므로 생성 중에는 막는다(SettingsPanel 의 aiBusy 게이트와 동일 기준).
+  // 설치는 앱을 종료시키므로 진행 중 작업이 있으면 막는다(SettingsPanel 과 동일 기준).
+  // QA20(A·C 수렴): RAG 인덱싱·PDF 파싱도 포함해야 한다 — 부분 인덱스는 설계상 영속되지 않아
+  // 이미 지불한 클라우드 임베딩 비용이 통째로 버려지고, 스캔 PDF 의 OCR 은 수 분 작업이 소멸한다.
+  // "앱을 종료시키는 조작"의 게이트는 세션 삭제보다 넓어야 한다.
   const isCollectionBusy = useAppStore((s) => s.isCollectionBusy);
-  const updateInstallBusy = isGenerating || isQaGenerating || isCollectionBusy;
+  const ragIndexing = useAppStore((s) => s.ragState.isIndexing);
+  const updateInstallBusy = isGenerating || isQaGenerating || isCollectionBusy || isParsing || ragIndexing;
   // Ctrl+O / 파일 다이얼로그 재진입 가드. 진행 중이면 연타 Ctrl+O 를 무시한다.
   // 기존의 "setIsParsing(true) 만 올리는" 힌트 방식은 실제 재진입을 막지 못했음.
   const dialogOpenRef = useRef(false);

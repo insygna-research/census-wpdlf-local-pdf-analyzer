@@ -114,6 +114,28 @@ describe('SettingsPanel — 앱 업데이트 섹션', () => {
     }
   });
 
+  // QA20(A·C 수렴): 설치는 앱을 종료시키므로 게이트가 aiBusy 보다 넓어야 한다 — 인덱싱 중이면
+  // 이미 지불한 클라우드 임베딩이, 파싱 중이면 수 분의 OCR 이 통째로 버려진다.
+  it('QA20: RAG 인덱싱 중에도 설치 버튼이 비활성', async () => {
+    useAppStore.setState((s) => ({ ragState: { ...s.ragState, isIndexing: true } }));
+    try {
+      await renderWith(state({ status: 'downloaded', newVersion: '1.1.0', percent: 100 }));
+      expect(screen.getByRole('button', { name: t('update.installBtn') }).hasAttribute('disabled')).toBe(true);
+    } finally {
+      useAppStore.setState((s) => ({ ragState: { ...s.ragState, isIndexing: false } }));
+    }
+  });
+
+  it('QA20: PDF 파싱 중에도 설치 버튼이 비활성', async () => {
+    useAppStore.setState({ isParsing: true });
+    try {
+      await renderWith(state({ status: 'downloaded', newVersion: '1.1.0', percent: 100 }));
+      expect(screen.getByRole('button', { name: t('update.installBtn') }).hasAttribute('disabled')).toBe(true);
+    } finally {
+      useAppStore.setState({ isParsing: false });
+    }
+  });
+
   it('QA19(C-LOW): 다운로드 실패 후에도 버전이 남아 있으면 재다운로드 버튼 제공', async () => {
     const user = await renderWith(state({ status: 'error', errorKey: 'updateNetwork', newVersion: '1.1.0' }));
     await user.click(screen.getByRole('button', { name: t('update.downloadBtn') }));

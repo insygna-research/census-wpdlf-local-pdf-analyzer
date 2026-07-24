@@ -15,13 +15,19 @@ concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
+# QA20(B-MED): 권한은 **잡 단위**로 최소화한다. 이전에는 워크플로 수준에 contents:write /
+# id-token:write / attestations:write 를 두어 `test` 잡까지 상속했는데, 그 잡은 `npm ci` 로
+# 수십 개 devDependency 의 라이프사이클 스크립트를 실행하고 actions/checkout 이 기본값
+# (persist-credentials:true)으로 토큰을 .git/config 에 남긴다 — 침해된 devDependency 하나가
+# 저장소 계정 탈취 없이 릴리즈 자산(latest.yml/installer)을 덮어쓸 수 있었다. 자동 업데이트
+# 도입 이후 그 자산은 곧 "전 사용자 코드 실행"이므로 표면을 좁힌다. (test.yml 은 이미
+# contents:read 로 최소화돼 있어 같은 저장소 안의 비대칭이었다.)
+permissions: {}
 
 jobs:
   test:
+    permissions:
+      contents: read
     # R28: Windows 회귀(경로 구분자, pwsh 인용, cpSync 동작)를 사전 차단하기 위해 OS matrix 도입.
     # macOS는 release 빌드에서 제외했으므로 test에서도 제외.
     strategy:
@@ -38,12 +44,26 @@ jobs:
         # VS 버전 전환의 영향을 받지 않는다. windows-2025-vs2026 라벨은 테스트 전용(마이그레이션
         # 후 windows-2025 로 환원)이라 영구 핀 금지. VS2022 고정이 필요해지면(향후 네이티브 추가 시)
         # windows-2022 로 변경할 것.
-        os: [ubuntu-latest, windows-2025]
+        #
+        # QA20(D-MED): 아래 step 들의 조건을 OS 라벨 문자열 비교(`matrix.os == 'ubuntu-latest'`)로
+        # 두면, 위 주석이 지시하는 라벨 변경(windows-2025→windows-2022 등)만으로 커버리지·E2E·
+        # Windows 유닛 게이트가 **한 번도 실행되지 않은 채 잡이 성공**한다(무증상 실효 — 이 저장소가
+        # test.yml 4릴리즈 연속 red 로 이미 겪은 계열). 라벨 대신 **의도 플래그**로 분기한다.
+        include:
+          - os: ubuntu-latest
+            coverage: true
+            e2e: true
+          - os: windows-2025
+            unitOnly: true
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       # actions/checkout@v6.0.2 (Node 24)
+      # QA20(B-MED): persist-credentials:false — 이 잡은 자산을 올리지 않으므로 토큰을
+      # .git/config 에 남길 이유가 없다(npm ci 가 실행하는 서드파티 스크립트의 탈취 표면 제거).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
 
       # actions/setup-node@v6.4.0 (Node 24)
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
@@ -97,11 +117,11 @@ jobs:
       #   OS/Node 비의존이라 1회면 충분). windows-2025 는 경로/pwsh 회귀 검증용으로 plain
       #   유닛 테스트 유지 — 동일 ubuntu 에서 이중 실행(test + coverage)을 피한다.
       - name: Unit tests + coverage gate (ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.coverage
         run: npm run test:coverage
 
       - name: Unit tests (windows path regression)
-        if: matrix.os == 'windows-2025'
+        if: matrix.unitOnly
         run: npm test
 
       # C5-I2(QA cycle5): E2E 스모크를 릴리즈 게이트로 승격. 이전엔 E2E 실행이 test.yml(main push)
@@ -110,14 +130,14 @@ jobs:
       # ubuntu 레그에서만 실행(+3~5분): CI-결정적 스펙 9건, AI 백엔드 불필요. Windows 레그는
       # 경로/pwsh 유닛 회귀 검증 전용 유지(이중 실행 회피).
       - name: Build + E2E smoke gate (ubuntu)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.e2e
         run: |
           npm run build
           xvfb-run --auto-servernum -- npx playwright test
 
       # C5-I3: 실패 포렌식 — trace(on-first-retry) 산출물 회수(test.yml e2e 잡과 대칭).
       - name: Upload E2E failure artifacts
-        if: failure() && matrix.os == 'ubuntu-latest'
+        if: failure() && matrix.e2e
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-e2e-failure-${{ github.run_id }}
@@ -130,6 +150,11 @@ jobs:
     # windows-2025: 2026-06-15 까지 VS2026 으로 자동 전환되나 본 빌드는 VS 무의존(상단 matrix 주석 참조).
     runs-on: windows-2025
     timeout-minutes: 30
+    # QA20(B-MED): 릴리즈 자산 업로드·Sigstore 증명이 필요한 **이 잡에만** 쓰기 권한을 준다.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
 

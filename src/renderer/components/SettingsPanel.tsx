@@ -29,6 +29,12 @@ export function SettingsPanel() {
   // 세팅 전이라, 누락 시 provider/model 변경이 열려 useRagBuilder 재빌드가 진행 중 인덱스를 churn.
   const isCollectionBusy = useAppStore((s) => s.isCollectionBusy);
   const aiBusy = isGenerating || isQaGenerating || isCollectionBusy;
+  // QA20(A·C 수렴): 업데이트 설치는 **앱을 종료시키므로** aiBusy 보다 넓은 게이트가 필요하다 —
+  // RAG 인덱싱 중이면 이미 지불한 클라우드 임베딩이 통째로 버려지고(부분 인덱스는 미영속),
+  // PDF 파싱/OCR 중이면 수 분 작업이 소멸한다. 다른 설정 항목은 기존 aiBusy 기준을 유지한다.
+  const isParsing = useAppStore((s) => s.isParsing);
+  const ragIndexing = useAppStore((s) => s.ragState.isIndexing);
+  const installBusy = aiBusy || isParsing || ragIndexing;
   const t = useT();
 
   const [draft, setDraft] = useState<AppSettings>({ ...settings });
@@ -1041,8 +1047,8 @@ export function SettingsPanel() {
                   onClick={handleUpdateInstall}
                   // QA19(A-MED): 설치는 앱을 종료시킨다 — 생성 중이면 진행분이 폐기되므로
                   // 세션 삭제와 동일하게 aiBusy 로 막는다(이전엔 이 조작만 게이트 밖이었다).
-                  disabled={aiBusy}
-                  title={aiBusy ? t('update.installBlockedBusy') : undefined}
+                  disabled={installBusy}
+                  title={installBusy ? t('update.installBlockedBusy') : undefined}
                   className="px-3 py-1.5 text-sm bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                 >
                   {t('update.installBtn')}
@@ -1052,7 +1058,7 @@ export function SettingsPanel() {
 
             {updateState.status === 'downloaded' && (
               <p className="mt-2 text-xs text-gray-600 dark:text-gray-400">
-                {aiBusy ? t('update.installBlockedBusy') : t('update.installNotice')}
+                {installBusy ? t('update.installBlockedBusy') : t('update.installNotice')}
               </p>
             )}
           </div>
