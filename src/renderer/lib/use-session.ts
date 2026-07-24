@@ -297,7 +297,11 @@ async function doPersistCurrentSession(flush = false): Promise<void> {
     // 인덱스 무변경 ⟹ 직전 전체저장/복원으로 디스크에 완전한 session.json+index.bin 이 존재.
     // 불변 본문(extractedText/pageTexts/chunkMeta)·blob 재전송 없이 변하는 qa/summary delta 만
     // 보내고 main 이 디스크 session.json 을 패치한다(IPC ~5MB→~50KB, 렌더러측 loadMeta 읽기도 생략).
-    if (idxUnchanged && typeof api.savePartial === 'function') {
+    // QA20(C-MED, 데이터손실): 미완주 스트림(중지·타임아웃·실패)은 이 fast-path 를 타지 않는다.
+    // fast-path 는 디스크의 기존 요약을 읽지 않으므로 "덮어써도 되는가"를 판정할 수 없고,
+    // patchSession 은 summaries[type] 을 무조건 교체하기 때문이다. 아래 전체 경로로 내려가면
+    // 기존 요약을 머지해 읽으므로 정확히 판정할 수 있다(미완주 상태는 드물어 비용도 미미).
+    if (idxUnchanged && typeof api.savePartial === 'function' && s.summaryStreamComplete) {
       const summaryPatch = (summaryContentToPersist && persistType)
         ? { type: persistType, content: summaryContentToPersist, ...persistMeta }
         : null;
@@ -354,10 +358,19 @@ async function doPersistCurrentSession(flush = false): Promise<void> {
       return;
     }
     if (summaryContentToPersist && persistType) {
-      summaries[persistType] = {
-        content: summaryContentToPersist,
-        ...persistMeta,
-      };
+      // QA20(C-MED, 데이터손실): 미완주 스트림은 **같은 타입의 기존 완성본을 덮어쓰지 않는다**.
+      // 기존 방어(persistCommitted)는 flush 경로 전용인데, 중지·타임아웃·실패는 isGenerating 을
+      // 먼저 끄므로 그 뒤의 일반 자동저장이 부분 스트림을 완성본으로 오인해 디스크의 완성 요약을
+      // 파괴했다(같은 타입으로 재요약 → 중지 한 번이면 원본 소실, 복구 불가).
+      // 단, 기존 요약이 **없으면** 부분 결과라도 저장한다 — QA18(A-MED)이 고친 "마지막 통합
+      // 단계에서만 실패하면 완주한 청크 요약이 한 글자도 저장되지 않던" 동작을 유지하기 위함.
+      const wouldOverwriteExisting = !!summaries[persistType];
+      if (s.summaryStreamComplete || !wouldOverwriteExisting) {
+        summaries[persistType] = {
+          content: summaryContentToPersist,
+          ...persistMeta,
+        };
+      }
     }
 
     // 인덱스 필드/blob/keepIndex 결정 — 4-상태:

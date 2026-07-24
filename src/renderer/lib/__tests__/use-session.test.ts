@@ -410,6 +410,78 @@ describe('persistCurrentSession (module-3)', () => {
     expect(payload.session.summaries.full?.content).toBe('이전 완성본');
   });
 
+  // QA20(C-MED, 데이터손실): 위 flush 경로 방어(persistCommitted)는 isGenerating 에 의존하는데,
+  // 중지·타임아웃·실패는 setIsGenerating(false) 를 **먼저** 실행한다. 그래서 그 뒤의 일반
+  // 자동저장(디바운스, flush=false)이 부분 스트림을 완성본으로 오인해 디스크의 완성 요약을
+  // 덮어썼다 — 같은 타입으로 재요약하다 중지 한 번이면 원본이 복구 불가로 소실.
+  it('중지된 부분 스트림(미완주)은 디스크의 같은 타입 완성본을 덮어쓰지 않는다', async () => {
+    const doc = makeDoc('aborted-resummary-doc');
+    const existing = persistedSession(doc, false); // 디스크에 summaries.full = '복원된 요약'
+    useAppStore.setState({
+      document: doc,
+      // 중지 직후 상태: isGenerating 은 이미 false, 스트림엔 부분본만 남음
+      summaryStream: '중지된 10% 부분본',
+      summaryStreamType: 'full',
+      summaryStreamComplete: false,
+      isGenerating: false,
+      summary: null,
+      qaMessages: [],
+      ragIndex: new VectorStore(),
+    });
+    api.session.load.mockResolvedValue(existing);
+    api.session.loadMeta.mockResolvedValue(existing);
+
+    await persistCurrentSession();
+
+    const payload = api.session.save.mock.calls[0]![0] as { session: PersistedSession };
+    expect(payload.session.summaries.full?.content, '완성본이 부분본으로 파괴되면 안 된다').toBe('복원된 요약');
+  });
+
+  // QA18(A-MED) 동작 유지: 기존 요약이 **없으면** 미완주 결과라도 저장한다 — "마지막 통합
+  // 단계에서만 실패해 완주한 청크 요약이 한 글자도 저장되지 않던" 회귀를 되살리지 않기 위함.
+  it('기존 요약이 없으면 미완주 스트림도 저장한다 (QA18 동작 유지)', async () => {
+    const doc = makeDoc('partial-first-summary-doc');
+    useAppStore.setState({
+      document: doc,
+      summaryStream: '통합 직전 실패한 청크 요약들',
+      summaryStreamType: 'full',
+      summaryStreamComplete: false,
+      isGenerating: false,
+      summary: null,
+      qaMessages: [],
+      ragIndex: new VectorStore(),
+    });
+    api.session.load.mockResolvedValue(null);   // 디스크에 세션 없음
+    api.session.loadMeta.mockResolvedValue(null);
+
+    await persistCurrentSession();
+
+    const payload = api.session.save.mock.calls[0]![0] as { session: PersistedSession };
+    expect(payload.session.summaries.full?.content).toBe('통합 직전 실패한 청크 요약들');
+  });
+
+  it('완주한 요약은 기존 완성본을 정상적으로 갱신한다', async () => {
+    const doc = makeDoc('completed-resummary-doc');
+    const existing = persistedSession(doc, false);
+    useAppStore.setState({
+      document: doc,
+      summaryStream: '새로 완주한 요약',
+      summaryStreamType: 'full',
+      summaryStreamComplete: true, // setSummary 가 세운 완주 표식
+      isGenerating: false,
+      summary: null,
+      qaMessages: [],
+      ragIndex: new VectorStore(),
+    });
+    api.session.load.mockResolvedValue(existing);
+    api.session.loadMeta.mockResolvedValue(existing);
+
+    await persistCurrentSession();
+
+    const payload = api.session.save.mock.calls[0]![0] as { session: PersistedSession };
+    expect(payload.session.summaries.full?.content).toBe('새로 완주한 요약');
+  });
+
   it('persistSessions=false 면 저장 skip', async () => {
     useAppStore.setState({ document: makeDoc(), settings: { ...useAppStore.getState().settings, persistSessions: false } });
     await persistCurrentSession();

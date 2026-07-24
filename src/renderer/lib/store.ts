@@ -212,6 +212,17 @@ interface AppState {
   summaryStream: string;
   /** QA18(A-MED): summaryStream 을 생성한 요약 타입(영속 저장 키의 단일 출처). */
   summaryStreamType: ActiveSummaryType | null;
+  /**
+   * QA20(C-MED, 데이터손실): 현재 summaryStream 이 **완주한 요약**인가.
+   *
+   * 저장 자격 판정에 쓴다. 기존 방어(`persistCommitted = flush && isGenerating`)는 종료·새로고침
+   * flush 경로에만 있었는데, 중지·타임아웃·실패는 `setIsGenerating(false)` 를 **먼저** 실행하므로
+   * 그 뒤의 일반 자동저장(디바운스)이 부분 스트림을 "완성본"으로 오인해 **같은 타입의 기존 완성
+   * 요약을 디스크에서 덮어썼다**(재요약 중지 한 번으로 원본 소실).
+   *
+   * false → 미완주(run 시작 직후·중단·실패). true → 성공 커밋(setSummary) 또는 세션 복원본.
+   */
+  summaryStreamComplete: boolean;
   summaryType: ActiveSummaryType;
   // 페이지 범위 요약 — null 이면 전체. {start,end} 는 1-based inclusive. 문서 전환 시 리셋.
   summaryPageRange: { start: number; end: number } | null;
@@ -410,6 +421,8 @@ export const useAppStore = create<AppState>((set) => ({
   // QA18(A-MED): summaryStream 을 만든 요약 타입. setSummary 는 성공 완주 시에만 호출되므로
   // s.summary(마지막 성공 커밋)를 스트림의 타입 키로 쓰면 중단·실패 run 에서 영구히 어긋난다.
   summaryStreamType: null,
+  // QA20(C-MED): 새 run 이 시작되기 전에는 완주본이 없다.
+  summaryStreamComplete: false,
   summaryCollapsed: false,
   setSummaryCollapsed: (summaryCollapsed) => set({ summaryCollapsed }),
   summaryType: 'full',
@@ -418,7 +431,10 @@ export const useAppStore = create<AppState>((set) => ({
   currentRequestId: null,
   progress: 0,
   progressInfo: null,
-  setSummary: (summary) => set({ summary }),
+  // QA20(C-MED): setSummary 는 **성공 완주** 또는 **세션 복원** 시에만 호출된다(중단·타임아웃
+  // 경로는 호출하지 않음). 따라서 여기서 스트림을 '완주본'으로 표시하면, 이후 자동저장이
+  // 부분 스트림으로 기존 완성 요약을 덮어쓰는 것을 막을 수 있다.
+  setSummary: (summary) => set({ summary, summaryStreamComplete: summary !== null }),
   appendStream: (token) => {
     // v0.18.22 R36 P1: 세션이 이미 종료된 상태(isGenerating=false)면 토큰을 무시한다.
     // appendQaStream(R32 P3) 과 대칭 — 사용자 Stop → handleAbort 가 flushStream + setIsGenerating(false)
@@ -457,7 +473,8 @@ export const useAppStore = create<AppState>((set) => ({
       clearTimeout(streamState.flushTimer);
       streamState.flushTimer = null;
     }
-    set({ summaryStream: '', summaryStreamType: ownerType ?? null });
+    // QA20(C-MED): 새 run 의 스트림은 완주 전이다 — 저장 자격 초기화.
+    set({ summaryStream: '', summaryStreamType: ownerType ?? null, summaryStreamComplete: false });
   },
   replaceSummaryStream: (content) => {
     // 후처리된 전체 내용으로 교체. 이미 flushStream 호출 이후이므로 버퍼 정리만 수행.
@@ -497,6 +514,8 @@ export const useAppStore = create<AppState>((set) => ({
       document: null,
       summaryStream: '',
       summaryStreamType: null,
+      // QA20(C-MED): 문서 전환 시 저장 자격도 초기화(이전 문서의 완주 표식 승계 방지).
+      summaryStreamComplete: false,
       summaryCollapsed: false,
       summaryPageRange: null, // 페이지 범위는 문서별이므로 전환 시 전체로 리셋
       isGenerating: false,
