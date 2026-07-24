@@ -49,7 +49,7 @@ This document has two parts — **[User Guide](#user-guide)** (install · usage 
 
 Once installed, the app checks GitHub Releases for a new version on startup and shows a notice when one is ready — no need to revisit this page for every release.
 
-- **Check is automatic, download is not** — you are told a new version exists; the download (~115MB) starts only after you press **Download**, so metered or tethered connections are never used without consent
+- **Check is automatic, download is not** — you are told a new version exists; the download (~100MB) starts only after you press **Download**, so metered or tethered connections are never used without consent
 - **Install on your terms** — when the download finishes, a banner offers **Restart and install**. Summaries, Q&A, and search indexes in progress are flushed to disk before the app closes
 - Turn the startup check off under **Settings → App Updates**; the **Check now** button there always works regardless
 - Only the installed Windows app self-updates — running from source (`npm run dev`) shows the section as unavailable
