@@ -88,6 +88,7 @@ beforeEach(() => {
     summaryType: 'full',
     isGenerating: false,
     isQaGenerating: false,
+    isParsing: false,
     summaryStream: '',
     summary: null,
     error: null,
@@ -117,6 +118,15 @@ describe('useSummarize — 가드', () => {
     useAppStore.setState({ isGenerating: true });
     await runSummarize();
     expect(M.summarizeCalls).toHaveLength(0);
+  });
+
+  // QA20(C-MED, 데이터손실): 파싱 중에는 store 의 document 가 곧 교체된다 — 여기서 시작한 요약은
+  // pdf-parser 의 setDocument 시점에 저장 없이 폐기된다(persistCurrentSession 은 생성 중이라 skip).
+  it('파싱 중이면 요약을 시작하지 않는다 (완료 후 폐기 방지)', async () => {
+    useAppStore.setState({ isParsing: true });
+    await runSummarize();
+    expect(M.summarizeCalls).toHaveLength(0);
+    expect(useAppStore.getState().isGenerating).toBe(false);
   });
 });
 
@@ -308,6 +318,35 @@ describe('useSummarize — Stop→재요약 race (ownership 가드, QA post-v0.3
     // run1 의 finally/ setSummary 가 ownership 가드로 스킵 → run2 결과 보존.
     expect(final.summary?.id).toBe(run2Summary?.id);
     expect(final.isGenerating).toBe(false);
+  });
+
+  // QA20(C-MED, 데이터손실): 커밋 경로의 **문서** 소유권 절. clientRef 소유권만 보던 시절,
+  // 스트리밍이 끝나는 사이 문서가 교체되면(파싱 완료/탭 전환) 문서 A 의 요약이 문서 B 에
+  // setSummary 되고, 이어지는 자동저장이 그 본문을 B 의 세션 파일에 summaries[A타입] 으로
+  // 기록해 B 의 기존 요약을 오염시켰다. catch 블록·use-qa 에는 있던 가드의 성공 경로 누락.
+  it('스트리밍 중 문서가 교체되면 구 문서 요약을 새 문서에 커밋하지 않는다', async () => {
+    let release!: () => void;
+    M.gate = new Promise<void>((r) => { release = r; });
+
+    const { result } = renderHook(() => useSummarize());
+
+    let runDone: Promise<void> = Promise.resolve();
+    await act(async () => {
+      runDone = result.current.handleSummarize();
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(M.summarizeCalls).toHaveLength(1);
+
+    // 문서 교체 — clientRef 소유권은 그대로다(새 run 이 시작된 게 아니므로).
+    act(() => { useAppStore.setState({ document: makeDoc({ id: 'doc-OTHER' }), summary: null }); });
+
+    // 스트리밍 완주 → 후처리·커밋 단계 도달.
+    await act(async () => { release(); await runDone; });
+
+    const st = useAppStore.getState();
+    expect(st.summary).toBeNull();              // 새 문서에 구 문서 요약이 붙지 않음
+    expect(st.summaryStreamComplete).toBe(false); // 저장 자격도 서지 않음(자동저장 덮어쓰기 차단)
+    expect(st.isGenerating).toBe(false);         // finally 정리는 정상 수행
   });
 
   // C5-M1(QA cycle5): 취소 술어가 ambient `!isGenerating` 이던 시절, Stop→즉시 재요약하면

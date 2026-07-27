@@ -715,9 +715,13 @@ export default function App() {
               </div>
             )}
 
+            {/* QA20(C-MED, 데이터손실): isParsing 중 비활성 — 새 PDF 파싱(재파싱 포함)이 끝나면
+                store 의 document 가 교체되면서 그 사이 시작된 요약이 저장 없이 폐기된다. 훅
+                (useSummarize)의 진입 가드가 진실의 원천이고 여기는 그 상태를 시각화한다
+                (TabBar/⚙️ 가 이미 isParsing 을 비활성 조건에 포함하는 것과 대칭). */}
             <button
               onClick={() => { setSummaryCollapsed(false); handleSummarize(); }}
-              disabled={ollamaNotReady}
+              disabled={ollamaNotReady || isParsing}
               className={hasSummary
                 ? 'px-4 py-2 text-sm bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-200 rounded-lg hover:bg-gray-300 dark:hover:bg-gray-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed'
                 : 'px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 text-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed'}

@@ -600,7 +600,15 @@ export function useSummarize() {
     // stale closure 방지: store에서 최신 상태 직접 읽기
     const currentState = useAppStore.getState();
     // isCollectionBusy: 교차 요약 준비(gather) 중에는 단일 요약도 차단 — race 클로버링 방지(QA R).
-    if (!currentState.document || currentState.isGenerating || currentState.isQaGenerating || currentState.isCollectionBusy) return;
+    // QA20(C-MED, 데이터손실): isParsing 중에도 차단한다. handlePdfData 는 진입부에서 isGenerating
+    // 을 검사하지만 그 검사는 **함수 진입 1회뿐**이고, 이후 `await parsePdf`(스캔 PDF 의 OCR 이면
+    // 분 단위) 동안 store 는 여전히 이전 문서를 담고 있어 요약 버튼이 그대로 살아 있었다. 그 사이
+    // 시작한 요약은 파싱이 끝나는 순간 조용히 폐기된다 — pdf-parser 가 setDocument 직전에 호출하는
+    // persistCurrentSession() 은 "생성 중" 이라 skip(no-op) 하고, 곧바로 clearStream/setSummary(null)/
+    // setDocument 가 진행 중이던 요약을 지워 버린다(디스크에도 화면에도 남지 않음). 탭 전환(TabBar)·
+    // 설정 진입은 이미 isParsing 을 차단 조건에 넣고 있는데 요약 버튼만 예외였다.
+    if (!currentState.document || currentState.isGenerating || currentState.isQaGenerating
+        || currentState.isCollectionBusy || currentState.isParsing) return;
     const currentSettings = currentState.settings;
     const currentSummaryType = currentState.summaryType;
     // 페이지 범위 요약: 범위가 일부면 문서를 마스킹된 사본으로 좁힌다(인용 [p.N] 절대번호 보존).
@@ -686,6 +694,9 @@ export function useSummarize() {
       // stale run 이 "부활" — Vision 을 계속 호출(이중 과금)하고 구분선/후처리를 새 run 의
       // 스트림에 주입했다. 소유권(clientRef)이 넘어간 run 은 영구 취소 상태가 된다.
       const stillOwns = () => clientRef.current === client;
+      // QA20(C-MED): 문서 소유권 — 이 run 이 시작될 때의 문서가 아직 활성인가. clientRef 소유권과
+      // 직교한다(문서 교체가 곧 새 run 을 의미하지는 않는다).
+      const stillSameDoc = () => useAppStore.getState().document?.id === doc.id;
       const isRunAborted = () => timedOut || !stillOwns() || !useAppStore.getState().isGenerating;
       // 스트림 append 도 소유권 게이트 — store.appendStream 의 입구 게이트(isGenerating)는
       // 새 run 이 다시 켜 두므로 stale run 의 구분선(`\n\n---\n\n`)/통합 헤딩 주입을 막지 못한다.
@@ -885,7 +896,12 @@ export function useSummarize() {
       const durationMs = Date.now() - startTime;
       // C5-M1: 후처리(flush→strip→replace)도 소유권 가드 — stale run 이 새 run 의 live 스트림을
       // 조기 strip/치환하던 결함. 비소유 run 은 커밋 없이 종료(표시 정리는 handleAbort/새 run 몫).
-      if (!stillOwns()) return;
+      // QA20(C-MED): **문서** 소유권도 함께 본다. clientRef 소유권은 "이 훅의 최신 run 인가" 만
+      // 말해줄 뿐, 그 사이 문서가 교체됐는지는 말해주지 않는다 — catch 블록(currentDoc.id === doc.id)
+      // 과 use-qa(stillOurs)에는 있는 절이 성공 커밋 경로에만 빠져 있었다. 문서 A 의 요약이 문서 B
+      // 로 흘러 들어가면 setSummary 가 B 의 화면에 A 본문을 띄우고, 자동저장이 그 본문을
+      // summaries[A타입] 으로 **B 세션 파일에 기록**한다(디스크 오염, 재오픈해도 그대로).
+      if (!stillOwns() || !stillSameDoc()) return;
       flushStream();
       const rawContent = useAppStore.getState().summaryStream;
       // 후처리: (1) 대화형 멘트 제거 → (2) 인용 배치 정규화
