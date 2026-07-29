@@ -339,6 +339,49 @@ describe('writeSession keepIndex (serialize-skip, Tier2)', () => {
     expect((await readSession(DIR, h))!.blob).toBeNull();
   });
 
+  // QA21(C-MED, 데이터손실): 열린 탭의 세션은 evict 대상에서 제외(pin)한다. 비활성 탭의 분석
+  // 상태(요약·Q&A·인덱스)는 메모리에 없고 디스크 세션에만 있어(탭 전환 시 setSummary(null)/
+  // clearQa()) evict 되면 그 탭으로 돌아갔을 때 복구 불가다.
+  it('열린 탭(openDocHashes)의 세션은 LRU evict 되지 않는다', async () => {
+    const oldestOpen = hashOf(100); // 가장 오래된 = 원래라면 첫 번째 evict 대상
+    for (let i = 0; i < SESSION_MAX_COUNT; i++) {
+      await writeSession(DIR, {
+        meta: { ...metaOf(hashOf(100 + i)), fileName: `doc-${i}.pdf` },
+        session: { v: i }, blob: null, now: 1000 + i,
+      });
+    }
+    const r = await writeSession(DIR, {
+      meta: { ...metaOf(hashOf(999)), fileName: 'newest.pdf' },
+      session: { v: 999 }, blob: null, now: 9999,
+      openDocHashes: [oldestOpen], // 이 문서 탭이 열려 있다
+    });
+
+    expect(r.ok).toBe(true);
+    const hashes = (await listSessions(DIR)).map((e) => e.docHash);
+    expect(hashes, '열린 탭은 보호돼야 한다').toContain(oldestOpen);
+    // 상한은 여전히 지켜진다 — 열린 탭 대신 그 다음으로 오래된 것이 지워진다
+    expect(hashes).not.toContain(hashOf(101));
+    expect(r.evicted).toContain('doc-1.pdf');
+  });
+
+  it('열린 탭만 남아 상한을 넘으면 아무것도 지우지 않는다 (분석 결과 > 디스크 상한)', async () => {
+    const all: string[] = [];
+    for (let i = 0; i < SESSION_MAX_COUNT; i++) {
+      const h = hashOf(200 + i);
+      all.push(h);
+      await writeSession(DIR, { meta: { ...metaOf(h) }, session: { v: i }, blob: null, now: 1000 + i });
+    }
+    const r = await writeSession(DIR, {
+      meta: { ...metaOf(hashOf(888)) }, session: { v: 1 }, blob: null, now: 9999,
+      openDocHashes: all, // 전부 열려 있음
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.evicted).toBeUndefined();
+    // 상한(30)을 일시 초과하도록 둔다 — 탭을 닫으면 다음 저장에서 정리된다
+    expect((await listSessions(DIR)).length).toBe(SESSION_MAX_COUNT + 1);
+  });
+
   // QA21(C-MED, 데이터손실): LRU 정리는 완전 무음이었다 — ok:true 로 반환돼 렌더러의 연속실패
   // 통지망도 통과했고, 사용자는 비활성 탭의 요약·Q&A 가 사라진 이유를 알 수 없었다.
   it('LRU 로 세션이 삭제되면 삭제된 문서명을 결과에 실어 알린다', async () => {

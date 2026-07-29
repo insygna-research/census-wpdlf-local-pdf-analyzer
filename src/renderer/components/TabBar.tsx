@@ -14,11 +14,15 @@ export function TabBar() {
   const isQaGenerating = useAppStore((s) => s.isQaGenerating);
   const isParsing = useAppStore((s) => s.isParsing);
   const isCollectionBusy = useAppStore((s) => s.isCollectionBusy);
+  // QA21(B-LOW): 전환 진행 중 표식. 이전엔 tabs.ts 의 **모듈 로컬** 변수라 React 가 구독할 수
+  // 없어, 전환 중 다른 탭을 클릭하면 switchToTab 이 조용히 return 했다(index.bin 이 큰 문서에선
+  // 수 초간 클릭이 안 먹는 것처럼 보임). store 이관으로 이제 시각화할 수 있다.
+  const isTabSwitching = useAppStore((s) => s.isTabSwitching);
   const t = useT();
 
   if (openTabs.length === 0) return null;
   // isCollectionBusy 포함 — isTabSwitchBlocked 와 동일 기준(gather 중 전환 차단).
-  const blocked = isGenerating || isQaGenerating || isParsing || isCollectionBusy;
+  const blocked = isGenerating || isQaGenerating || isParsing || isCollectionBusy || isTabSwitching;
 
   // a11y M4: 이전엔 <div role="tab"> 안에 전환·닫기 버튼 2개를 중첩해 ARIA nested-interactive 를
   // 위반했고, role="tab" 자체는 비포커스이며 roving tabindex/화살표키·tabpanel 연결도 없어 불완전한

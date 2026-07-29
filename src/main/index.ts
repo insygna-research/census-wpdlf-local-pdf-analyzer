@@ -736,7 +736,7 @@ export function registerIpcHandlers(): void {
   const MAX_SESSION_BLOB_BYTES = 64 * 1024 * 1024;
 
   ipcMain.handle('session:save', async (_event, payload: unknown) => {
-    const p = payload as { meta?: SessionSaveMeta; session?: unknown; blob?: ArrayBuffer | null; keepIndex?: boolean } | null;
+    const p = payload as { meta?: SessionSaveMeta; session?: unknown; blob?: ArrayBuffer | null; keepIndex?: boolean; openDocHashes?: unknown } | null;
     if (!p || !p.meta || !isValidDocHash(p.meta.docHash)) return { ok: false };
     let meta = p.meta;
     const session = p.session;
@@ -758,7 +758,11 @@ export function registerIpcHandlers(): void {
       meta = { ...meta, embedModel: null, embedDim: null, chunkCount: 0 };
     }
     const keepIndex = p.keepIndex === true;
-    return serializeSessionWrite(() => writeSession(sessionsDir, { meta, session, blob, keepIndex, now: Date.now() }));
+    // QA21(C-MED): 열린 탭 목록을 함께 넘겨 LRU evict 에서 제외(pin)한다 — 비활성 탭의 요약·Q&A 는
+    // 메모리에 없고 디스크 세션에만 있어 evict 되면 영구 소실이다(session-store 의 pin 주석 참조).
+    return serializeSessionWrite(() => writeSession(sessionsDir, {
+      meta, session, blob, keepIndex, now: Date.now(), openDocHashes: p.openDocHashes,
+    }));
   });
 
   // 부분 저장(serialize-skip 짝) — 인덱스 무변경 시 자동저장이 호출. qa/summary delta 만 받아

@@ -9,7 +9,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { renderHook, act, cleanup } from '@testing-library/react';
 
 // AiClient 스트리밍 모킹 — summarize 에 전달된 promptText 를 캡처해 컨텍스트 구성 검증.
-const M = vi.hoisted(() => ({ prompt: '', empty: false, onToken: null as null | (() => void) }));
+// QA21: throwAfter — N개 토큰을 방출한 뒤 throw (에러 경로의 짝 복구/부분 보존 검증용).
+const M = vi.hoisted(() => ({
+  prompt: '', empty: false, onToken: null as null | (() => void),
+  throwAfter: null as number | null,
+}));
 vi.mock('../ai-client', () => ({
   AiClient: class {
     prepareSummarize() { return 'req-1'; }
@@ -17,7 +21,9 @@ vi.mock('../ai-client', () => ({
     async *summarize(prompt: string) {
       M.prompt = prompt;
       if (M.empty) return;
+      if (M.throwAfter === 0) throw new Error('스트림 중단');
       yield '답변';
+      if (M.throwAfter === 1) throw new Error('스트림 중단');
       M.onToken?.(); // 첫 토큰 후 훅 — 테스트에서 스트리밍 도중 소유권 변경 주입
       yield ' 본문';
     }
@@ -97,6 +103,7 @@ beforeEach(() => {
   M.prompt = '';
   M.empty = false;
   M.onToken = null;
+  M.throwAfter = null;
   mockEmbed.mockResolvedValue({ success: true, embeddings: [[1, 0, 0]], model: MODEL });
   mockSessionList.mockResolvedValue([manifestEntry('b'.repeat(64), MODEL, 3)]);
   mockSessionLoad.mockResolvedValue(betaBlob());
@@ -176,6 +183,39 @@ describe('handleAsk — 키워드 폴백 페이지 라벨 (QA21)', () => {
     await act(async () => { await result.current.handleAsk('그림 1 설명해줘'); });
 
     expect(M.prompt).toContain('매출 추이 차트 설명');
+  });
+});
+
+// QA21(D-MED): 종료 경로 셋 중 **에러만** 짝 불변식을 복구하지 않았다. 짝 없는 user 메시지는
+// ①다음 턴 프롬프트에 orphan `Q:` 로 주입되고(pair-skip 은 meta==='cancelled' 만 거른다)
+// ②자동저장의 trailing lone-user 제거가 `flush && isQaGenerating` 조건이라 **디스크에 영속**되며
+// ③짝수 FIFO drop 이 홀수 배열에서 선두를 assistant 로 만든다. 부분 답변도 abort 와 달리 폐기했다.
+describe('handleAsk — 에러 경로 짝 불변식 (QA21)', () => {
+  it('생성 중 에러가 나도 assistant 가 추가돼 짝이 유지된다', async () => {
+    seed(false);
+    M.throwAfter = 0; // 토큰 없이 즉시 throw
+    const { result } = renderHook(() => useQa());
+    await act(async () => { await result.current.handleAsk('실패할 질문'); });
+
+    const msgs = useAppStore.getState().qaMessages;
+    expect(msgs).toHaveLength(2);
+    expect(msgs[0]?.role).toBe('user');
+    expect(msgs[1]?.role, '짝 없는 user 가 남으면 안 된다').toBe('assistant');
+    expect(msgs[1]?.meta, 'LLM 컨텍스트에선 제외돼야 한다').toBe('cancelled');
+    expect(useAppStore.getState().error?.code).toBe('GENERATE_FAIL'); // 배너는 그대로
+  });
+
+  it('스트리밍 중 에러면 부분 답변을 보존한다 (abort 와 동일 시맨틱)', async () => {
+    seed(false);
+    M.throwAfter = 1; // 토큰 1개 방출 후 throw
+    const { result } = renderHook(() => useQa());
+    await act(async () => { await result.current.handleAsk('중간에 끊길 질문'); });
+
+    const msgs = useAppStore.getState().qaMessages;
+    expect(msgs).toHaveLength(2);
+    expect(msgs[1]?.role).toBe('assistant');
+    expect(msgs[1]?.content, '이미 화면에 나온 부분 답변을 버리면 안 된다').toContain('답변');
+    expect(msgs[1]?.meta).toBeUndefined(); // 실제 내용이 있으므로 placeholder 아님
   });
 });
 

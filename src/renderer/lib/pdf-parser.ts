@@ -799,8 +799,14 @@ export async function handlePdfData(
   // 게이트 조건(isReReadablePath, doc.filePath === 본 filePath 인자)은 파싱 전에 이미 알 수
   // 있는데도 무조건 복사해, 모든 정상 경로에서 최대 100MB 사장 힙이 파싱(OCR 스캔 PDF 면
   // 분 단위) 내내 클로저에 붙들려 있었다 — v0.31.10 pdfBytes 비상주(M1)의 잔여분.
-  const pdfBytesCopy = isReReadablePath(filePath) ? null : new Uint8Array(data.slice(0));
+  // QA21(A-LOW): 이 할당은 반드시 try **안**에 있어야 한다. setIsParsing(true) 이후 try 진입
+  // 전까지가 유일한 무보호 구간인데, 경로 없는 드롭(합성 File)에서 최대 100MB 복사가
+  // RangeError(OOM)로 실패하면 finally 를 타지 못해 **isParsing 이 true 로 고착**한다.
+  // 그러면 요약(QA20 이 요약 버튼을 isParsing 에 묶었다)·⚙️·탭 전환·업로더가 전부 영구 비활성
+  // 되고, 복구 수단은 드래그드롭 재열기(abort-replace 로 새 파싱이 소유권을 가져감)뿐이다.
+  let pdfBytesCopy: Uint8Array | null = null;
   try {
+    pdfBytesCopy = isReReadablePath(filePath) ? null : new Uint8Array(data.slice(0));
     // 이미지 분석이 꺼져 있으면 이미지 추출 스킵(파싱 시간↓ — 이미지 많은 PDF에서 큰 폭).
     // QA6-D: 스킵 여부를 doc 에 마커로 남긴다 — 이후 설정을 ON 으로 바꿔 재요약하면 images=[]
     // 라 Vision 이 무음 no-op 이었는데, 텍스트-only PDF 의 정당한 0장과 구분할 수 없었다.

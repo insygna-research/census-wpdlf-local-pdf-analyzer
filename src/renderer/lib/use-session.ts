@@ -445,7 +445,13 @@ async function doPersistCurrentSession(flush = false): Promise<void> {
       embedDim,
       chunkCount: chunkMeta.length,
     };
-    const result = await api.save({ meta, session, blob, keepIndex });
+    // QA21(C-MED): 열린 탭의 docHash 를 함께 보내 LRU evict 에서 제외(pin)한다. 비활성 탭의
+    // 요약·Q&A 는 메모리에 없고 디스크 세션에만 있어(탭 전환 시 setSummary(null)/clearQa()),
+    // evict 되면 그 탭으로 돌아갔을 때 복구 불가다. docHash 가 아직 없는 탭(첫 저장 전)은 제외.
+    const openDocHashes = s.openTabs
+      .map((tb) => tb.docHash)
+      .filter((h): h is string => typeof h === 'string' && h.length > 0);
+    const result = await api.save({ meta, session, blob, keepIndex, openDocHashes });
     const ok = result?.ok !== false; // {ok:false}=실패, 그 외(true/구형 undefined)=성공 취급
     // 전체 blob 을 성공적으로 기록했을 때만 시그니처 갱신 → 다음 턴부터 동일 인덱스는 keepIndex.
     if (ok && fullSerialized) {

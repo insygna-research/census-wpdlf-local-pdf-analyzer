@@ -228,8 +228,25 @@ async function analyzeDocumentImages(
     batchIds.forEach((id) => registerInFlight?.(id));
     let results: PromiseSettledResult<string | null>[];
     try {
+      // QA21(A-MED): 진전 신호를 **이미지 개별 settle 마다** 낸다. 이전엔 배치 시작 시 1회뿐이라
+      // 배치 전체(Promise.allSettled)가 무진전 구간이었다. 클라우드 배치(8장)가 429 를 만나면
+      // retryOn429(2회) × Retry-After(최대 60s) + 요청 타임아웃(60s) 로 한 배치가 ~180s 까지
+      // 늘어나 renderer 감시견의 무진전 상한(120s)을 넘긴다 → 텍스트 한 글자 없이
+      // GENERATE_TIMEOUT. **v0.31.31 회귀와 똑같은 증상**(그때는 이미지 단계 전체가 무신호였고,
+      // 지금은 배치 하나가 무신호다). 개별 settle 을 신호로 삼으면 배치 크기·백오프와 무관해진다.
+      let settled = 0;
       results = await Promise.allSettled(
-        batch.map((img, idx) => client.analyzeImage(img.base64, batchIds[idx])),
+        batch.map((img, idx) => client.analyzeImage(img.base64, batchIds[idx]).finally(() => {
+          settled++;
+          const done = bi + settled;
+          setProgressInfo?.({
+            percent: Math.min(20, Math.round((done / doc.images.length) * 20)),
+            phase: 'image',
+            current: Math.min(done, doc.images.length),
+            total: doc.images.length,
+            elapsedMs: Date.now() - startTime,
+          });
+        })),
       );
     } finally {
       batchIds.forEach((id) => unregisterInFlight?.(id));

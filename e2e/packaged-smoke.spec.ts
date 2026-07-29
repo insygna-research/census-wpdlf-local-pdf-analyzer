@@ -115,7 +115,11 @@ test.describe('패키징 앱 스모크 (win-unpacked 필요)', () => {
   // 역방향 회귀 가드 — 기동 테스트가 구조적으로 못 보는 축(위 ASAR_MAX_BYTES 주석 참조).
   // 앱 실행이 필요 없으므로 별도 테스트로 분리한다(실패 시 원인이 즉시 구분된다).
   test('asar 크기 상한 — renderer 전용 deps 재유입 가드', () => {
-    test.skip(!existsSync(ASAR_PATH), 'win-unpacked 빌드가 없어 skip');
+    // QA21(A-LOW): REQUIRED 모드에서는 skip 을 금지한다 — 그러지 않으면 이 커밋이 닫으려던
+    // "skip=green" 구멍이 **새로 추가한 테스트에** 그대로 남는다. exe 는 있는데 asar 만 없는
+    // 상태(예: build 에 `"asar": false` 를 넣어 디버깅한 채 커밋)면 그룹 beforeAll 은 통과하고
+    // 이 게이트만 무음 skip 된다. 아래 statSync 가 대신 소리 나게 실패한다.
+    test.skip(!REQUIRED && !existsSync(ASAR_PATH), 'win-unpacked 빌드가 없어 skip');
     const bytes = statSync(ASAR_PATH).size;
     expect(
       bytes,

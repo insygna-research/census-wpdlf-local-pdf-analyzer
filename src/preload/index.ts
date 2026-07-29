@@ -64,7 +64,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   session: {
     load: (docHash: string) => ipcRenderer.invoke('session:load', docHash),
     loadMeta: (docHash: string) => ipcRenderer.invoke('session:loadMeta', docHash),
-    save: (payload: { meta: SessionSaveMeta; session: unknown; blob: ArrayBuffer | null; keepIndex?: boolean }) =>
+    // openDocHashes: QA21(C-MED) — 열린 탭의 세션을 LRU evict 에서 제외하기 위한 pin 목록.
+    save: (payload: { meta: SessionSaveMeta; session: unknown; blob: ArrayBuffer | null; keepIndex?: boolean; openDocHashes?: string[] }) =>
       ipcRenderer.invoke('session:save', payload),
     savePartial: (payload: { docHash: string; summary: { type: string; content: string; model: string; provider: string } | null; summaryType: string; qaMessages: unknown }) =>
       ipcRenderer.invoke('session:savePartial', payload),
@@ -191,7 +192,9 @@ export type ElectronAPI = {
   session: {
     load: (docHash: string) => Promise<{ session: unknown; blob: ArrayBuffer | null } | null>;
     loadMeta: (docHash: string) => Promise<{ session: unknown } | null>;
-    save: (payload: { meta: SessionSaveMeta; session: unknown; blob: ArrayBuffer | null; keepIndex?: boolean }) => Promise<{ ok: boolean }>;
+    // QA21(C-MED): evicted(LRU 로 삭제된 문서명, 사용자 통지용) / indexMissing(keepIndex 인데
+    // 디스크에 index.bin 부재 → 렌더러가 시그니처를 무효화하고 전체 저장으로 회복).
+    save: (payload: { meta: SessionSaveMeta; session: unknown; blob: ArrayBuffer | null; keepIndex?: boolean; openDocHashes?: string[] }) => Promise<{ ok: boolean; evicted?: string[]; indexMissing?: boolean }>;
     savePartial: (payload: { docHash: string; summary: { type: string; content: string; model: string; provider: string } | null; summaryType: string; qaMessages: unknown }) => Promise<{ ok: boolean }>;
     saveSummary: (payload: { docHash: string; type: string; summary: { content: string; model: string; provider: string } }) => Promise<{ ok: boolean }>;
     list: () => Promise<SessionManifestEntry[]>;

@@ -7,7 +7,7 @@ import { formatPageLabel, normalizeCitationPlacement, stripCitations } from './c
 import { labelParagraphsWithPages } from './use-summarize';
 import { t } from './i18n';
 import { VectorStore } from './vector-store';
-import { mergeSearchResults, resolveMembers } from './collection';
+import { mergeSearchResults, resolveMembers, MAX_COLLECTION_MEMBERS } from './collection';
 import type { QaMessage, ResolvedMember, CollectionSearchResult, PersistedSession } from '../types';
 
 const MAX_QUESTION_LENGTH = 1000;
@@ -619,12 +619,28 @@ export async function resolveCollectionSearch(
     manifest,
     st.openTabs,
   );
+  // QA21(D-LOW): MAX_COLLECTION_MEMBERS 는 "동시 로드 멤버 상한 — index.bin 동시 복원으로 인한
+  // 메모리 폭주 차단(설계 §7)" 이라고 선언돼 있었지만 **어디에서도 참조되지 않는 죽은 상수**였다
+  // (전 저장소 grep 결과 정의 1건, 참조 0건). collectionRagSearch 는 ready 멤버 전원을
+  // Promise.all 로 동시 복원하므로 대형 문서를 여럿 열면 질문 1회에 모든 index.bin 이 함께
+  // 메모리로 올라온다. 선언과 코드를 일치시킨다 — 활성 문서는 항상 포함(설계 §6 불변)하고
+  // 나머지 ready 멤버를 상한까지만 취한다.
+  // 잘림은 **조용히 넘기지 않는다** — 아래 degraded 로 사용자에게 고지한다(이 사이클에서
+  // 반복해 고친 "조용한 축소" 를 스스로 만들지 않기 위함).
+  const readyAll = members.filter((m) => m.status === 'ready');
+  const truncated = readyAll.length > MAX_COLLECTION_MEMBERS;
+  const effectiveMembers = truncated
+    ? [
+        ...readyAll.filter((m) => m.docHash === activeDocHash),
+        ...readyAll.filter((m) => m.docHash !== activeDocHash).slice(0, MAX_COLLECTION_MEMBERS - 1),
+      ]
+    : members;
   // 검색·검증이 같은 cache 공유 → 멤버 인덱스 1회만 로드(설계 §12-5)
   const cache = new Map<string, VectorStore>();
-  const ragResult = await collectionRagSearch(question, members, activeDocHash, signal, cache);
+  const ragResult = await collectionRagSearch(question, effectiveMembers, activeDocHash, signal, cache);
   // 강등 판정: 컬렉션을 켰는데 교차 결과가 없으면(단일 폴백) 강등.
   if (!ragResult) return { ragResult: null, degraded: true };
-  const stores = await loadReadyMemberStores(members, activeDocHash, cache);
+  const stores = await loadReadyMemberStores(effectiveMembers, activeDocHash, cache);
   // #9: 강등 기준을 manifest 'ready' 수가 아니라 **실제 index.bin 로드 성공 store 수**로 한다.
   // manifest 는 ready 지만 index.bin 이 손상/IO 실패로 로드 안 된 멤버를 과대계상하면, 실제로는
   // 활성 1개로만 답변하는데도 강등 통지가 누락된다. stores 는 실로드된 인덱스만 담는다(부분 성공 반영).
@@ -635,8 +651,8 @@ export async function resolveCollectionSearch(
   // 보인다(loadMemberIndex 는 세션 부재/blob 손상/차원 불일치를 전부 null 로 삼킨다).
   // 기대치(ready 로 판정된 멤버 수)에 **미달하면** 강등으로 본다. `< 2` 도 유지 —
   // ready 가 1개뿐이라 기대치는 채웠지만 교차가 성립하지 않는 경우를 계속 잡기 위함.
-  const expectedReady = members.filter((m) => m.status === 'ready').length;
-  const degraded = stores.length < 2 || stores.length < expectedReady;
+  const expectedReady = effectiveMembers.filter((m) => m.status === 'ready').length;
+  const degraded = stores.length < 2 || stores.length < expectedReady || truncated;
   return { ragResult, verifier: stores.length > 0 ? collectionVerifier(stores) : undefined, degraded };
 }
 
@@ -1271,6 +1287,25 @@ export function useQa() {
           code: 'GENERATE_FAIL',
           message: message || t('qa.answerFail'),
         });
+        // QA21(D-MED): 짝 불변식 복구 — 세 종료 경로 중 **에러만** 짝을 복구하지 않았다.
+        // handleAsk 는 진입 즉시 user 메시지를 넣는데(위 addQaMessage), 에러로 끝나면
+        // assistant 가 추가되지 않아 짝 없는 `Q:` 가 남는다. 그 결과:
+        //  ① 다음 턴의 formatHistory 가 답변 없는 `Q:` 를 그대로 프롬프트에 주입한다
+        //     (pair-skip 은 meta==='cancelled' 만 걸러내므로 이 케이스는 통과).
+        //  ② 자동저장의 trailing lone-user 제거는 `flush && isQaGenerating` 일 때만 도는데
+        //     에러 후엔 isQaGenerating=false 라 **orphan 이 session.json 에 영속**된다.
+        //  ③ 20개 초과 시 짝수 FIFO drop 이 홀수 배열에서 선두를 assistant 로 만든다.
+        // 또한 finally 가 스트림을 그냥 버려서, abort 는 보존하는 **부분 답변을 에러만 폐기**했다.
+        // abortQaPreservingThread 와 같은 시맨틱으로 수렴시킨다(부분 있으면 커밋, 없으면 placeholder).
+        errState.flushQaStream();
+        const partial = useAppStore.getState().qaStream;
+        if (partial) {
+          errState.addQaMessage({ role: 'assistant', content: partial });
+        } else {
+          errState.addQaMessage({ role: 'assistant', content: t('qa.answerFail'), meta: 'cancelled' });
+        }
+        errState.clearQaStream();
+        completed = true; // finally 의 중복 flush/clear 방지(성공 경로와 동일)
       }
     } finally {
       // v0.18.6 C25-M2 fix: stillOurs 체크를 finally 에도 적용.

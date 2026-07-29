@@ -96,7 +96,7 @@ function normalizeEntry(raw: unknown): SessionManifestEntry | null {
   };
 }
 
-export async function loadManifest(sessionsDir: string): Promise<SessionManifest> {
+async function readManifest(sessionsDir: string, throwOnIoError: boolean): Promise<SessionManifest> {
   try {
     const raw = await fsp.readFile(manifestPath(sessionsDir), 'utf-8');
     const parsed = JSON.parse(raw) as SessionManifest;
@@ -108,11 +108,42 @@ export async function loadManifest(sessionsDir: string): Promise<SessionManifest
       .filter((e): e is SessionManifestEntry => e !== null);
     return { schemaVersion: parsed.schemaVersion ?? SESSION_SCHEMA_VERSION, entries };
   } catch (err) {
+    // QA21(C-MED): RMW 호출자에게는 일시 I/O 오류를 전파한다(아래 loadManifestForWrite 주석 참조).
+    // JSON 파싱 오류는 code 가 없어 isRealIoError=false → 종전대로 빈 manifest 로 자가치유.
+    if (throwOnIoError && isRealIoError(err)) throw err;
     if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
       console.warn('[session] manifest load failed, resetting:', (err as Error)?.message);
     }
     return { schemaVersion: SESSION_SCHEMA_VERSION, entries: [] };
   }
+}
+
+/** 읽기 전용 경로(목록·통계·reconcile)용 — 어떤 실패든 빈 manifest 로 흡수한다. */
+export async function loadManifest(sessionsDir: string): Promise<SessionManifest> {
+  return readManifest(sessionsDir, false);
+}
+
+/**
+ * read-modify-write 경로 전용 manifest 읽기 — **일시 I/O 오류를 삼키지 않는다**.
+ *
+ * QA21(C-MED, 데이터손실): 이 파일은 "부재(ENOENT)·손상 ≠ 일시 I/O 오류" 원칙을 세우고
+ * (isRealIoError, api-keys-store 의 readForWrite) 세션 본문·index.bin·api-keys 읽기에 전부
+ * 적용했는데 **manifest 읽기만 예외**였다. loadManifest 는 모든 에러를 `{entries: []}` 로
+ * 흡수하는데, 그 함수가 6개 RMW 경로의 read 쪽이다.
+ *
+ * 결과: manifest.json 읽기가 EBUSY/EPERM 으로 **한 번만** 실패해도 그 직후의 writeSession 이
+ * "현재 문서 1건만 담긴 manifest" 를 디스크에 확정한다 — 다른 모든 세션이 디렉터리는 남은 채
+ * 최근목록·전역검색·의미검색·LRU 집계에서 조용히 증발한다(deleteSession 은 더 나빠서
+ * saveManifest([]) 로 통째로 비운다). 자동저장이 1.5초 디바운스로 manifest 를 상시 재기록하므로
+ * AV·인덱서의 share violation 표적이 되기 쉽다. 부팅 시 reconcileSessions 가 회수하지만
+ * 그때까지는 사용자에게 전량 소실로 보인다.
+ *
+ * 일시 오류면 throw → 호출자의 기존 try/catch 가 {ok:false} 로 귀결돼 **디스크를 보존**한다
+ * (세션 본문은 이미 원자적으로 기록됐고 manifest 재기록만 포기하므로, 다음 저장이나 부팅
+ * reconcile 이 회수한다). 부재/손상은 종전대로 빈 manifest — 첫 저장이 정상 진행돼야 한다.
+ */
+async function loadManifestForWrite(sessionsDir: string): Promise<SessionManifest> {
+  return readManifest(sessionsDir, true);
 }
 
 async function saveManifest(sessionsDir: string, manifest: SessionManifest): Promise<void> {
@@ -129,6 +160,15 @@ export function enforceLru(
   entries: SessionManifestEntry[],
   maxCount: number = SESSION_MAX_COUNT,
   maxBytes: number = SESSION_MAX_TOTAL_BYTES,
+  /**
+   * QA21(C-MED): 보호 대상(열린 탭) docHash — **후보 선정 단계에서** 건너뛴다.
+   * 호출자가 결과에서 걸러내는 방식으로는 안 된다: 가장 오래된 항목이 pin 이면 그 라운드에서
+   * 아무것도 지우지 못하고, 다음 저장에서도 같은 항목이 후보로 뽑혀 **상한이 영구히 미적용**된다
+   * (그 탭이 열려 있는 한 디스크가 무한 증가). 여기서 건너뛰면 그 다음으로 오래된 비보호 항목이
+   * 후보가 되어 상한이 계속 유지된다. 보호 대상만 남아 더는 지울 게 없으면 빈 배열 —
+   * 상한을 일시 초과하도록 두는 것이 사용자가 보고 있는 문서의 분석 결과를 잃는 것보다 낫다.
+   */
+  pinned: ReadonlySet<string> = new Set(),
 ): string[] {
   const sorted = [...entries].sort((a, b) => a.lastAccessed.localeCompare(b.lastAccessed));
   let count = entries.length;
@@ -136,6 +176,7 @@ export function enforceLru(
   const evict: string[] = [];
   for (let i = 0; i < sorted.length && (count > maxCount || total > maxBytes); i++) {
     const e = sorted[i]!;
+    if (pinned.has(e.docHash)) continue; // 보호 — count/total 도 줄이지 않는다(여전히 디스크에 있음)
     evict.push(e.docHash);
     count -= 1;
     total -= e.byteSize;
@@ -245,7 +286,15 @@ export async function readSessionMeta(
 /** 세션 저장 + manifest upsert + LRU 정리. best-effort — 실패 시 { ok:false }. */
 export async function writeSession(
   sessionsDir: string,
-  params: { meta: SessionSaveMeta; session: unknown; blob: ArrayBuffer | null; keepIndex?: boolean; now: number },
+  params: {
+    meta: SessionSaveMeta; session: unknown; blob: ArrayBuffer | null; keepIndex?: boolean; now: number;
+    /**
+     * QA21(C-MED): 렌더러에서 지금 **열려 있는 탭**의 docHash 목록. LRU evict 대상에서 제외한다
+     * (아래 pin 주석 참조). main 은 탭 상태를 보유하지 않으므로 저장 요청마다 함께 받는다.
+     * 미전달(구버전 preload·테스트)이면 종전 동작 — 열린 탭 보호 없음.
+     */
+    openDocHashes?: unknown;
+  },
   // QA21(C-MED): LRU 로 실제 삭제된 세션의 파일명. 지금까지 evict 는 **완전 무음**이었다 —
   // ok:true 로 반환되므로 렌더러의 연속실패 통지망(recordSaveResult)도 통과했고, 사용자는
   // 비활성 탭으로 돌아갔을 때 요약·Q&A 가 통째로 사라진 것을 발견할 뿐 이유를 알 수 없었다
@@ -254,6 +303,13 @@ export async function writeSession(
 ): Promise<{ ok: boolean; evicted?: string[]; indexMissing?: boolean }> {
   const { session, blob, keepIndex, now } = params;
   let { meta } = params;
+  // 렌더러 입력이므로 신뢰하지 않고 정규화 — 유효 docHash 만 취한다(다른 렌더러 제공 meta 필드와
+  // 동일 정책). 손상된 값이 와도 pin 이 과대적용돼 LRU 가 무력화되지 않도록 상한도 둔다.
+  const pinnedHashes = new Set(
+    (Array.isArray(params.openDocHashes) ? params.openDocHashes : [])
+      .filter(isValidDocHash)
+      .slice(0, SESSION_MAX_COUNT),
+  );
   // keepIndex 인데 디스크에 index.bin 이 없었는가(아래 정규화 참조) — 렌더러가 시그니처를
   // 무효화하고 다음 저장에서 인덱스를 재기록하도록 알린다.
   let indexMissing = false;
@@ -336,7 +392,7 @@ export async function writeSession(
     const byteSize = Buffer.byteLength(jsonStr) + blobBytes + metaBytes;
     const nowIso = new Date(now).toISOString();
 
-    const manifest = await loadManifest(sessionsDir);
+    const manifest = await loadManifestForWrite(sessionsDir);
     const existing = manifest.entries.find((e) => e.docHash === meta.docHash);
     // R41 fix: 렌더러 제공 meta 필드 서버측 정규화 — 손상된 렌더러의 거대 문자열/비유한 숫자가
     // manifest 를 오염시키거나 enforceLru 의 byteSize 합산을 NaN 으로 무력화하는 것을 차단.
@@ -358,8 +414,24 @@ export async function writeSession(
     const next: SessionManifestEntry[] = [...others, entry];
 
     const evictedNames: string[] = [];
-    const evict = enforceLru(next);
+    const evict = enforceLru(next, SESSION_MAX_COUNT, SESSION_MAX_TOTAL_BYTES, pinnedHashes);
     if (evict.length > 0) {
+      // QA21(C-MED, 데이터손실): **열린 탭의 세션은 evict 하지 않는다(pin).**
+      // enforceLru 의 보호 대상은 "지금 저장 중인 문서" 하나뿐이었고, main 은 렌더러의 열린 탭
+      // 집합을 전혀 몰랐다. 그런데 비활성 탭의 분석 상태(요약·Q&A·인덱스)는 **오직 디스크
+      // 세션에만** 존재한다 — tabs.ts 가 탭 전환 시 setSummary(null)/clearQa() 로 메모리를
+      // 비우기 때문이다. 따라서 evict 되면 그 탭으로 되돌아갔을 때 세션 복원이 실패하고
+      // 재파싱 fallback 을 타도 요약·Q&A·인덱스는 **복구 불가**다. writeSession 이 ok:true 를
+      // 반환하므로 렌더러의 연속실패 통지망도 통과해 완전 무음이었다.
+      // (Tier3 에서 통지를 먼저 붙였고, 여기가 근본 수정이다.)
+      //
+      // pin 은 **상한 자체를 무력화하지 않는다** — 열린 탭을 제외하고도 지울 대상이 있으면
+      // 그것부터 지운다. 열린 탭만 남아 상한을 넘는 극단(탭을 30개 이상 열어둔 경우)에서는
+      // 아무것도 지우지 않고 상한을 일시 초과하도록 둔다: 디스크 초과보다 **사용자가 지금 보고
+      // 있는 문서의 분석 결과를 잃는 쪽이 더 비싸다**. 탭을 닫으면 다음 저장에서 정리된다.
+      // (실제 제외는 enforceLru 의 **후보 선정 단계**에서 이뤄진다 — 결과에서 걸러내면 가장
+      //  오래된 항목이 pin 일 때 매 라운드 같은 후보만 뽑혀 상한이 영구 미적용된다. 이 함정은
+      //  회귀 테스트가 잡았다. enforceLru 의 pinned 주석 참조.)
       const evictSet = new Set(evict.filter((h) => h !== meta.docHash));
       // QA post-v0.31.14: rm 이 성공한 항목만 manifest 에서 제거한다. 이전엔 rm 결과와 무관하게
       // 무조건 엔트리를 드롭해, Windows 에서 rm 이 EBUSY/EPERM(AV 스캔·동시 session:load/search 가
@@ -445,7 +517,7 @@ export async function mergeSessionSummary(
     let blobBytes = 0;
     try { blobBytes = (await fsp.stat(path.join(dir, INDEX_BIN))).size; } catch { blobBytes = 0; }
     try { blobBytes += (await fsp.stat(path.join(dir, INDEX_META))).size; } catch { /* 사이드카 없음 */ }
-    const manifest = await loadManifest(sessionsDir);
+    const manifest = await loadManifestForWrite(sessionsDir);
     const entry = manifest.entries.find((e) => e.docHash === docHash);
     if (entry) {
       entry.byteSize = Buffer.byteLength(jsonStr) + blobBytes;
@@ -525,7 +597,7 @@ export async function patchSession(
     let blobBytes = 0;
     try { blobBytes = (await fsp.stat(path.join(dir, INDEX_BIN))).size; } catch { blobBytes = 0; }
     try { blobBytes += (await fsp.stat(path.join(dir, INDEX_META))).size; } catch { /* 사이드카 없음 */ }
-    const manifest = await loadManifest(sessionsDir);
+    const manifest = await loadManifestForWrite(sessionsDir);
     const entry = manifest.entries.find((e) => e.docHash === docHash);
     if (entry) {
       entry.byteSize = Buffer.byteLength(jsonStr) + blobBytes;
@@ -549,7 +621,7 @@ export async function patchSession(
 export async function touchSession(sessionsDir: string, docHash: string, now: number): Promise<void> {
   if (!isValidDocHash(docHash)) return;
   try {
-    const manifest = await loadManifest(sessionsDir);
+    const manifest = await loadManifestForWrite(sessionsDir);
     const entry = manifest.entries.find((e) => e.docHash === docHash);
     if (!entry) return;
     entry.lastAccessed = new Date(now).toISOString();
@@ -561,7 +633,7 @@ export async function deleteSession(sessionsDir: string, docHash: string): Promi
   if (!isValidDocHash(docHash)) return { ok: false };
   try {
     await fsp.rm(sessionDir(sessionsDir, docHash), { recursive: true, force: true });
-    const manifest = await loadManifest(sessionsDir);
+    const manifest = await loadManifestForWrite(sessionsDir);
     manifest.entries = manifest.entries.filter((e) => e.docHash !== docHash);
     await saveManifest(sessionsDir, manifest);
     return { ok: true };

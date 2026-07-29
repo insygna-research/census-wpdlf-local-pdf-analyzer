@@ -160,6 +160,16 @@ export class ApiKeyStore {
     const encrypted = this.crypto.encryptString(JSON.stringify(keys));
     try {
       fs.writeFileSync(tmpPath, encrypted);
+      // QA21(C-LOW): rename 전 fsync(best-effort). 형제 스토어 3종(settings/collections/session
+      // manifest)은 QA6-B 에서 이미 적용했는데 **이 파일만 빠져 있었다**. 저널링 FS 에서 전원
+      // 차단 시 rename 메타데이터만 커밋돼 0바이트/절단 파일이 남을 수 있고, 그러면 readRaw 의
+      // 복호화·파싱이 실패해 `transient:false` 로 판정 → **빈 키셋이 "진실" 로 캐시되어 클라우드
+      // API 키가 전량 소실**된다. fsync 제외 근거였던 "손상돼도 재계산으로 자가치유" 가 이
+      // 파일에는 해당되지 않는다 — 사용자 재입력 외에 복구 경로가 아예 없다.
+      try {
+        const fd = fs.openSync(tmpPath, 'r+');
+        try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      } catch { /* fsync 불가 환경(테스트 모킹 등) — 원자성(rename)은 그대로 유지 */ }
       fs.renameSync(tmpPath, this.filePath);
       // 쓰기 성공 후 캐시에 최신값 반영 — 다음 읽기에서 파일 I/O 회피.
       // null-prototype 객체로 캐시하여 read() 와 일관성 유지.
