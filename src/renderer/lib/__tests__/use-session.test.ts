@@ -71,6 +71,12 @@ beforeEach(() => {
   // store 초기화
   useAppStore.setState({
     document: null, summary: null, summaryStream: '', qaMessages: [],
+    // QA21(A-LOW): 이 두 키를 리셋하지 않아 테스트 간 상태가 **누수**되고 있었다 — fast-path
+    // 회귀 넷 6건이 앞 테스트가 세운 summaryStreamComplete=true 에 의존해 통과했고, 단독
+    // 실행하면 실패했다(순서 의존 = 회귀를 못 잡는 그린).
+    summaryStreamComplete: false, summaryStreamType: null,
+    // 컬렉션 gather 플래그도 테스트 간 누수 방지(아래 flush 케이스가 true 로 세운다).
+    isCollectionBusy: false,
     isGenerating: false, isQaGenerating: false, sessionRestorePending: false,
     restoredSession: null, ragIndex: new VectorStore(),
     ragState: { isIndexing: false, progress: null, isAvailable: false, model: null, chunkCount: 0, error: null },
@@ -460,6 +466,74 @@ describe('persistCurrentSession (module-3)', () => {
     expect(payload.session.summaries.full?.content).toBe('통합 직전 실패한 청크 요약들');
   });
 
+  // QA21(A-MED, v0.31.34 출시 회귀): QA20 의 미완주 게이트가 **커밋된 완성본까지** 차단했다.
+  // flush 경로는 QA12 가 만든 통로로 "생성 중이면 부분 스트림 대신 s.summary(직전 완주본)를
+  // 저장" 하는데, 진행 중인 새 run 이 clearStream 으로 summaryStreamComplete=false 를 세워
+  // 두므로 게이트가 그 커밋본을 미완주로 오인했다. 디스크에 같은 타입이 있으면 skip →
+  // 방금 완주한 요약이 소실되고 옛 요약이 남는다(무경고).
+  it('flush 중 재요약: 방금 완주한 커밋본이 디스크의 옛 요약을 정상적으로 갱신한다', async () => {
+    const doc = makeDoc('flush-committed-overwrite-doc');
+    const existing = persistedSession(doc, false); // 디스크에 summaries.full = '복원된 요약'
+    useAppStore.setState({
+      document: doc,
+      // 직전 run 이 완주해 커밋한 요약
+      summary: { id: 's', documentId: doc.id, type: 'full', content: '방금 완주한 요약', model: 'gemma3', provider: 'ollama', createdAt: new Date(), durationMs: 1 },
+      // 새 run 이 진행 중 — clearStream 이 완주 표식을 내렸고 스트림엔 부분본만
+      summaryStream: '새 run 의 5% 부분본',
+      summaryStreamType: 'full',
+      summaryStreamComplete: false,
+      isGenerating: true,
+      qaMessages: [],
+      ragIndex: new VectorStore(),
+    });
+    api.session.load.mockResolvedValue(existing);
+    api.session.loadMeta.mockResolvedValue(existing);
+
+    await persistCurrentSession(true); // flush=true (종료/새로고침)
+
+    const payload = api.session.save.mock.calls[0]![0] as { session: PersistedSession };
+    expect(payload.session.summaries.full?.content, '커밋된 완주본이 저장돼야 한다(부분본도 옛 요약도 아님)').toBe('방금 완주한 요약');
+  });
+
+  // QA21(A-MED, v0.31.34 출시 회귀): summaryStreamComplete 는 "미완주"뿐 아니라 **요약을 한 번도
+  // 하지 않은 정상 상태**에서도 false 다. 그래서 요약 없는 문서(Q&A 만 한 문서)가 fast-path 에서
+  // 배제됐고, 컬렉션 gather 중 flush 는 partialOnly 라 전체저장도 막혀 **아무것도 저장되지 않았다**
+  // (QA18 이 열어둔 유일한 통로가 막힘 → 마지막 Q&A 턴 소실).
+  it('컬렉션 gather 중 flush: 요약 없는 문서도 부분저장으로 Q&A 가 보존된다', async () => {
+    const doc = makeDoc('collection-flush-noqsummary-doc');
+    const vs = VectorStore.restore(makeIndexFixture());
+    useAppStore.setState({
+      document: doc,
+      summary: null,
+      summaryStream: '',        // 요약을 한 번도 하지 않은 문서
+      summaryStreamType: null,
+      summaryStreamComplete: false,
+      qaMessages: [{ id: 'q', role: 'user', content: 'q' }],
+      ragIndex: vs,
+    });
+    api.session.load.mockResolvedValue(null);
+    api.session.loadMeta.mockResolvedValue(null);
+
+    // 1번째: 전체 저장으로 시그니처 등록 (이후 인덱스 무변경 → fast-path 자격)
+    await persistCurrentSession();
+    expect(api.session.save).toHaveBeenCalledTimes(1);
+
+    // 컬렉션 gather 시작 + Q&A 턴 추가 → 종료 flush
+    useAppStore.setState({
+      isCollectionBusy: true,
+      qaMessages: [
+        { id: 'q', role: 'user', content: 'q' },
+        { id: 'a', role: 'assistant', content: '답변' },
+      ],
+    });
+    await persistCurrentSession(true); // flush=true
+
+    expect(api.session.savePartial, 'gather 중 flush 는 savePartial 로 Q&A 를 보존해야 한다').toHaveBeenCalledTimes(1);
+    const partial = api.session.savePartial.mock.calls[0]![0] as PartialPayload;
+    expect(partial.qaMessages).toHaveLength(2);
+    expect(partial.summary, '저장할 요약이 없으므로 summaries 는 건드리지 않는다').toBeNull();
+  });
+
   it('완주한 요약은 기존 완성본을 정상적으로 갱신한다', async () => {
     const doc = makeDoc('completed-resummary-doc');
     const existing = persistedSession(doc, false);
@@ -591,9 +665,13 @@ type PartialPayload = {
   qaMessages: { id: string }[];
 };
 describe('persistCurrentSession serialize-skip + 부분저장 (Tier2/3)', () => {
+  // 성공 완주해 커밋된 요약 상태. QA21(A-LOW): summaryStreamComplete 를 명시한다 — 실제로
+  // setSummary 가 세우는 값이며, 이게 없으면 이 픽스처는 "요약이 완주된 문서"를 표현하지 못한다
+  // (기존에는 beforeEach 미리셋 덕에 앞 테스트의 true 가 누수돼 우연히 통과하고 있었다).
   const summaryState = (doc: PdfDocument, content: string) => ({
     summary: { id: 's', documentId: doc.id, type: 'full' as const, content, model: 'm', provider: 'ollama' as const, createdAt: new Date(), durationMs: 1 },
     summaryStream: content,
+    summaryStreamComplete: true,
   });
 
   it('인덱스 무변경 시 2번째 저장은 부분저장(savePartial)으로 — 전체 save 미호출·본문 미전송', async () => {

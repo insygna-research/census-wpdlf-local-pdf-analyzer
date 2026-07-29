@@ -256,6 +256,16 @@ async function doPersistCurrentSession(flush = false): Promise<void> {
   const persistType = persistCommitted
     ? (s.summary?.type ?? null)
     : (s.summaryStreamType ?? s.summary?.type ?? null);
+  // QA21(A-MED, v0.31.34 회귀 수정): QA20 이 도입한 미완주 판정을 두 조각으로 정확히 나눈다.
+  // 원 게이트는 `s.summaryStreamComplete` 하나였는데, 이 플래그는 **미완주**뿐 아니라
+  //  ① flush 중 재요약(진행 중인 새 run 의 clearStream 이 내려놓은 상태 — 정작 저장 대상은
+  //     s.summary 라는 **커밋된 완주본**이다) 과
+  //  ② 요약을 한 번도 하지 않은 문서(초기값 false — 저장할 요약 자체가 없다)
+  // 에서도 false 라, 둘 다 "미완주" 로 오인해 차단했다. ①은 방금 완주한 요약을 소실시키고,
+  // ②는 컬렉션 gather 중 flush 에서 fast-path 를 막아(그 뒤 partialOnly return) **아무것도
+  // 저장되지 않게** 만들었다(QA18 이 열어둔 유일한 통로 봉쇄 = Q&A 턴 소실).
+  // 교훈: 판정 플래그를 도입할 때는 그 값이 각 값을 갖는 **모든 정상 상태**를 열거할 것.
+  const summaryIsCommitted = persistCommitted || s.summaryStreamComplete;
   // 메타(model/provider)는 커밋본이 같은 타입일 때만 그것을 쓰고, 아니면 현재 설정을 기록한다.
   const persistMeta = (s.summary && s.summary.type === persistType)
     ? { model: s.summary.model, provider: s.summary.provider }
@@ -301,10 +311,15 @@ async function doPersistCurrentSession(flush = false): Promise<void> {
     // fast-path 는 디스크의 기존 요약을 읽지 않으므로 "덮어써도 되는가"를 판정할 수 없고,
     // patchSession 은 summaries[type] 을 무조건 교체하기 때문이다. 아래 전체 경로로 내려가면
     // 기존 요약을 머지해 읽으므로 정확히 판정할 수 있다(미완주 상태는 드물어 비용도 미미).
-    if (idxUnchanged && typeof api.savePartial === 'function' && s.summaryStreamComplete) {
-      const summaryPatch = (summaryContentToPersist && persistType)
-        ? { type: persistType, content: summaryContentToPersist, ...persistMeta }
-        : null;
+    // QA21(A-MED): 단 **저장할 요약 델타가 없으면**(summaryPatch=null) patchSession 은
+    // summaries 를 아예 건드리지 않으므로 덮어쓸 위험 자체가 없다 → fast-path 를 막을 이유가
+    // 없다. 요약을 하지 않은 문서 전체가 이 경우이고, 그런 문서에서 fast-path 를 막으면
+    // Tier3 최적화(IPC ~5MB→~50KB)가 무효화될 뿐 아니라 컬렉션 flush 가 통째로 소실된다.
+    const summaryPatch = (summaryContentToPersist && persistType)
+      ? { type: persistType, content: summaryContentToPersist, ...persistMeta }
+      : null;
+    if (idxUnchanged && typeof api.savePartial === 'function'
+        && (summaryIsCommitted || summaryPatch === null)) {
       let partialOk = false;
       try {
         const r = await api.savePartial({
@@ -364,8 +379,11 @@ async function doPersistCurrentSession(flush = false): Promise<void> {
       // 파괴했다(같은 타입으로 재요약 → 중지 한 번이면 원본 소실, 복구 불가).
       // 단, 기존 요약이 **없으면** 부분 결과라도 저장한다 — QA18(A-MED)이 고친 "마지막 통합
       // 단계에서만 실패하면 완주한 청크 요약이 한 글자도 저장되지 않던" 동작을 유지하기 위함.
+      // QA21(A-MED): 판정은 summaryIsCommitted — flush 중 재요약이면 저장 대상이 부분 스트림이
+      // 아니라 **직전 완주본**(persistCommitted)이므로 미완주로 취급하면 안 된다. 원 게이트가
+      // s.summaryStreamComplete 만 봐서 그 완주본을 차단했다(v0.31.34 데이터손실 회귀).
       const wouldOverwriteExisting = !!summaries[persistType];
-      if (s.summaryStreamComplete || !wouldOverwriteExisting) {
+      if (summaryIsCommitted || !wouldOverwriteExisting) {
         summaries[persistType] = {
           content: summaryContentToPersist,
           ...persistMeta,
