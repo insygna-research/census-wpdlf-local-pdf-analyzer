@@ -117,6 +117,26 @@ function safeRandomId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
+/**
+ * in-flight AI 요청 abort (v0.18.20 R32 P2). 문서 교체 시 main 의 generator 가 계속 토큰을
+ * yield 하면 두 세션 토큰이 인터리브되는 cross-session contamination 이 발생하고, 클라우드는
+ * 버려질 응답에 계속 과금된다. 여기서 IPC 를 즉시 끊어 둘 다 차단한다.
+ *
+ * QA21(B-MED): resetSummaryState 안에 인라인돼 있던 것을 함수로 분리했다 — clearQa 도 같은
+ * 처리가 필요한데(문서 교체 경로에서 resetSummaryState 보다 **먼저** 실행되며 qaRequestId 를
+ * 지운다) 로직이 한쪽에만 있어 abort 가 유실됐다.
+ *
+ * window.electronAPI 가 없는 테스트 환경에서는 silent no-op.
+ */
+function abortInFlightAiRequests(...requestIds: (string | null | undefined)[]): void {
+  const electronAPI = (globalThis as { window?: { electronAPI?: { ai?: { abort?: (id: string) => Promise<unknown> } } } })
+    .window?.electronAPI;
+  if (!electronAPI?.ai?.abort) return;
+  for (const id of requestIds) {
+    if (id) electronAPI.ai.abort(id).catch(() => {});
+  }
+}
+
 // appendStream 배치 처리용 버퍼 (50ms 간격 flush)
 // 캡슐화하여 HMR/테스트 시 안전한 리셋 지원
 const streamState = {
@@ -206,6 +226,19 @@ interface AppState {
   // store 로 옮겨 handlePdfData 진입 가드에서도 참조한다(zustand set 은 동기 — 가드 의미 동일).
   collectionOpenInFlight: boolean;
   setCollectionOpenInFlight: (v: boolean) => void;
+  /**
+   * QA21(B/A-MED, 데이터손실): 탭 전환/닫기/새 탭(+) 진행 표식. 위 collectionOpenInFlight 와
+   * **같은 사유의 두 번째 이관**이다 — tabs.ts 의 모듈 로컬 플래그는 store 밖이라 훅(useSummarize/
+   * use-qa/use-collection-summary)과 UI(TabBar)가 볼 수 없었다. 그래서 세션-우선 복원 경로
+   * (isParsing 을 세우지 않는다)의 `await persistCurrentSession()` → `await session.load()`
+   * (index.bin 수 MB) 두 await 동안 요약/질문 버튼이 살아 있었고, 거기서 시작한 작업은
+   * 복원이 끝나며 clearStream/clearQa/setDocument 로 조용히 폐기됐다.
+   *
+   * ⚠️ handlePdfData 는 이 플래그를 참조해선 안 된다 — openTabTarget 의 파일 재파싱 fallback 이
+   * handlePdfData 를 호출하므로 자기 차단이 된다(tabs.ts 상단 주석의 제약을 그대로 유지).
+   */
+  isTabSwitching: boolean;
+  setTabSwitching: (v: boolean) => void;
 
   // 요약
   summary: Summary | null;
@@ -395,6 +428,8 @@ export const useAppStore = create<AppState>((set) => ({
   setCollectionBusy: (isCollectionBusy) => set({ isCollectionBusy }),
   collectionOpenInFlight: false,
   setCollectionOpenInFlight: (collectionOpenInFlight) => set({ collectionOpenInFlight }),
+  isTabSwitching: false,
+  setTabSwitching: (isTabSwitching) => set({ isTabSwitching }),
   setDocument: (document) => {
     if (!document) {
       // 문서 닫기 시 RAG 인덱스 + 요약/Q&A 상태 전부 해제. resetSummaryState 와 수렴.
@@ -501,12 +536,7 @@ export const useAppStore = create<AppState>((set) => ({
     // (R32 Surface 1 P2). 여기서 IPC 를 즉시 끊어 root cause 차단 — 비용(클라우드 토큰)도
     // 같이 절약. window.electronAPI 가 없는 테스트 환경에서는 silent no-op.
     const prevState = useAppStore.getState();
-    const electronAPI = (globalThis as { window?: { electronAPI?: { ai?: { abort?: (id: string) => Promise<unknown> } } } })
-      .window?.electronAPI;
-    if (electronAPI?.ai?.abort) {
-      if (prevState.qaRequestId) electronAPI.ai.abort(prevState.qaRequestId).catch(() => {});
-      if (prevState.currentRequestId) electronAPI.ai.abort(prevState.currentRequestId).catch(() => {});
-    }
+    abortInFlightAiRequests(prevState.qaRequestId, prevState.currentRequestId);
     // RAG 인덱스 초기화
     const { ragIndex } = prevState;
     ragIndex.clear();
@@ -608,6 +638,11 @@ export const useAppStore = create<AppState>((set) => ({
   setQaRequestId: (qaRequestId) => set({ qaRequestId }),
   clearQa: () => {
     qaStreamState.reset();
+    // QA21(B-MED, 과금): in-flight Q&A 요청을 **id 를 지우기 전에** 끊는다. 호출자는 둘 다 문서
+    // 교체 경로(pdf-parser / tabs)인데, 순서가 `clearQa()` → `setDocument()` 라서 뒤이은
+    // resetSummaryState 의 abort 가 이미 null 이 된 qaRequestId 를 보고 아무것도 하지 않았다.
+    // 그 결과 클라우드 Q&A 요청이 끊기지 않고 완주하며 계속 과금됐다(응답은 버려지므로 순손실).
+    abortInFlightAiRequests(useAppStore.getState().qaRequestId);
     set({ qaMessages: [], qaStream: '', isQaGenerating: false, qaRequestId: null, qaVerifying: false });
   },
 

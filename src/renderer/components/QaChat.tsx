@@ -46,6 +46,12 @@ export function QaChat() {
   const { handleAsk, handleQaAbort, qaMessages, qaStream, isQaGenerating, qaVerifying, ragState } = useQa();
   // 교차 요약 준비(gather) 중에는 입력 차단 — isQaGenerating 세팅 전 창의 race 방지(QA R).
   const isCollectionBusy = useAppStore((s) => s.isCollectionBusy);
+  // QA21(B-MED): 문서 교체가 예정된 상태(파싱/탭 전환)도 입력 차단. 진실의 원천은 훅
+  // (use-qa 의 handleAsk 가드)이고 여기는 그 상태를 시각화한다 — 누락되면 입력창이 활성인데
+  // 전송만 조용히 무시되는 "죽은 입력" 이 된다.
+  const isParsing = useAppStore((s) => s.isParsing);
+  const isTabSwitching = useAppStore((s) => s.isTabSwitching);
+  const docSwapPending = isParsing || isTabSwitching;
   const t = useT();
   const [input, setInput] = useState('');
   // M4(UX): 답변별 복사 — 복사 직후 짧게 ✓ 피드백. (요약엔 복사가 있었지만 Q&A 답변엔 없어
@@ -98,6 +104,9 @@ export function QaChat() {
     if (trimmed.length > MAX_QUESTION_LENGTH) return;
     // RAG 인덱싱 중에는 전송 차단 — 부분 인덱스로 답변해 정확도가 떨어지는 문제 방지
     if (ragState.isIndexing) return;
+    // QA21(B-MED): 훅 가드에 걸릴 상태면 여기서 먼저 멈춘다 — 아래 setInput('') 이 먼저 실행되면
+    // handleAsk 가 조용히 return 할 때 **사용자가 입력한 질문만 지워진다**(전송도 안 되고 복구도 불가).
+    if (docSwapPending || isCollectionBusy) return;
     setInput('');
     if (inputRef.current) inputRef.current.style.height = 'auto';
     handleAsk(trimmed);
@@ -240,7 +249,7 @@ export function QaChat() {
           onChange={handleInput}
           onKeyDown={handleKeyDown}
           placeholder={t('qa.placeholder')}
-          disabled={isQaGenerating || ragState.isIndexing || isCollectionBusy}
+          disabled={isQaGenerating || ragState.isIndexing || isCollectionBusy || docSwapPending}
           rows={1}
           className="flex-1 resize-none rounded-lg border dark:border-gray-600 bg-white dark:bg-gray-800 text-gray-800 dark:text-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 placeholder:text-gray-400"
           aria-label={t('qa.inputAria')}
@@ -259,7 +268,7 @@ export function QaChat() {
         ) : (
           <button
             onClick={handleSubmit}
-            disabled={!input.trim() || isOverLimit || ragState.isIndexing || isCollectionBusy}
+            disabled={!input.trim() || isOverLimit || ragState.isIndexing || isCollectionBusy || docSwapPending}
             className="px-3 py-2 text-sm bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
             aria-label={t('qa.sendAria')}
           >

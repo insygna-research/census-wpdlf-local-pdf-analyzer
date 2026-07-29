@@ -29,7 +29,13 @@ export function CollectionBar() {
   const ragIsIndexing = useAppStore((s) => s.ragState.isIndexing);
   // isCollectionBusy: 교차 요약 준비(gather) 단계도 버튼 비활성 — 연타/끼어듦 방지(QA R).
   const isCollectionBusy = useAppStore((s) => s.isCollectionBusy);
-  const isBusy = isQaGenerating || isGenerating || ragIsIndexing || isCollectionBusy;
+  // QA21(B-MED): 문서 교체가 예정된 상태도 차단 — gather 중 교체가 일어나면 isCollectionBusy 가
+  // 새 문서로 눌러붙는데(resetSummaryState 가 초기화하지 않는 유일한 생성계 플래그), 새 문서엔
+  // QaChat 이 없어 gather 의 유일한 취소 버튼까지 사라진다(취소 불가 정지).
+  const isParsing = useAppStore((s) => s.isParsing);
+  const isTabSwitching = useAppStore((s) => s.isTabSwitching);
+  const isBusy = isQaGenerating || isGenerating || ragIsIndexing || isCollectionBusy
+    || isParsing || isTabSwitching;
 
   const [manifest, setManifest] = useState<SessionManifestEntry[]>([]);
   const [saving, setSaving] = useState(false);     // 이름 입력 표시 여부

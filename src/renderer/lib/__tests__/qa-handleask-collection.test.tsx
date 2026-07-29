@@ -86,6 +86,7 @@ function seed(collectionEnabled: boolean): void {
     ragState: { isIndexing: false, progress: null, isAvailable: true, model: MODEL, chunkCount: 1, error: null },
     collection: { enabled: collectionEnabled, memberHashes: ['a'.repeat(64), 'b'.repeat(64)] },
     qaMessages: [], qaStream: '', isGenerating: false, isQaGenerating: false, qaRequestId: null,
+    isParsing: false, isTabSwitching: false, isCollectionBusy: false,
     notice: null, error: null,
     settings: { ...useAppStore.getState().settings, provider: 'ollama', enableAnswerVerification: false, persistSessions: false, maxChunkSize: 4000 },
   });
@@ -101,6 +102,35 @@ beforeEach(() => {
   mockSessionLoad.mockResolvedValue(betaBlob());
 });
 afterEach(() => cleanup());
+
+// QA21(B-MED, 데이터손실+과금): 문서 교체가 예정된 상태(파싱/탭 전환)에서 시작한 질문은
+// 교체 시점의 clearQa() 가 화면·디스크 양쪽에서 지운다(직전 persistCurrentSession 은
+// isQaGenerating 이라 skip). useSummarize 가 QA20 에서 고친 결함의 정확한 쌍둥이 — 그때
+// 요약 버튼만 고치고 Q&A·컬렉션을 함께 훑지 않아 남아 있었다.
+describe('handleAsk — 문서 교체 예정 상태 가드 (QA21)', () => {
+  it('파싱 중이면 질문을 시작하지 않는다', async () => {
+    seed(false);
+    useAppStore.setState({ isParsing: true });
+    const { result } = renderHook(() => useQa());
+    await act(async () => { await result.current.handleAsk('파싱 중 질문'); });
+
+    // 사용자 메시지조차 추가되지 않아야 한다(추가 후 폐기되면 짝 없는 orphan 이 남는다)
+    expect(useAppStore.getState().qaMessages).toHaveLength(0);
+    expect(useAppStore.getState().isQaGenerating).toBe(false);
+    expect(M.prompt).toBe('');
+  });
+
+  it('탭 전환 중이면 질문을 시작하지 않는다 (세션-우선 복원 경로)', async () => {
+    seed(false);
+    useAppStore.setState({ isTabSwitching: true });
+    const { result } = renderHook(() => useQa());
+    await act(async () => { await result.current.handleAsk('탭 전환 중 질문'); });
+
+    expect(useAppStore.getState().qaMessages).toHaveLength(0);
+    expect(useAppStore.getState().isQaGenerating).toBe(false);
+    expect(M.prompt).toBe('');
+  });
+});
 
 describe('handleAsk — 컬렉션 글루 (CI 통합)', () => {
   it('컬렉션 모드: 교차 문서 컨텍스트로 프롬프트 구성 + 답변 커밋 + 강등 notice 없음', async () => {

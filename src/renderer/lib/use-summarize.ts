@@ -607,8 +607,11 @@ export function useSummarize() {
     // persistCurrentSession() 은 "생성 중" 이라 skip(no-op) 하고, 곧바로 clearStream/setSummary(null)/
     // setDocument 가 진행 중이던 요약을 지워 버린다(디스크에도 화면에도 남지 않음). 탭 전환(TabBar)·
     // 설정 진입은 이미 isParsing 을 차단 조건에 넣고 있는데 요약 버튼만 예외였다.
+    // QA21(A-MED): isTabSwitching 추가 — QA20 의 isParsing 가드만으로는 부족했다. 탭 전환의 주
+    // 경로인 **세션-우선 복원**(restoreTabFromSession)은 isParsing 을 세우지 않으므로, 탭 클릭
+    // 직후 요약을 시작하면 복원이 끝나며 그 요약이 그대로 증발했다(같은 증상, 다른 경로).
     if (!currentState.document || currentState.isGenerating || currentState.isQaGenerating
-        || currentState.isCollectionBusy || currentState.isParsing) return;
+        || currentState.isCollectionBusy || currentState.isParsing || currentState.isTabSwitching) return;
     const currentSettings = currentState.settings;
     const currentSummaryType = currentState.summaryType;
     // 페이지 범위 요약: 범위가 일부면 문서를 마스킹된 사본으로 좁힌다(인용 [p.N] 절대번호 보존).

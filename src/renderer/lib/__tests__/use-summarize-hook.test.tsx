@@ -89,6 +89,7 @@ beforeEach(() => {
     isGenerating: false,
     isQaGenerating: false,
     isParsing: false,
+    isTabSwitching: false,
     summaryStream: '',
     summary: null,
     error: null,
@@ -124,6 +125,16 @@ describe('useSummarize — 가드', () => {
   // pdf-parser 의 setDocument 시점에 저장 없이 폐기된다(persistCurrentSession 은 생성 중이라 skip).
   it('파싱 중이면 요약을 시작하지 않는다 (완료 후 폐기 방지)', async () => {
     useAppStore.setState({ isParsing: true });
+    await runSummarize();
+    expect(M.summarizeCalls).toHaveLength(0);
+    expect(useAppStore.getState().isGenerating).toBe(false);
+  });
+
+  // QA21(A-MED): isParsing 만으로는 부족했다 — 탭 전환의 주 경로인 세션-우선 복원
+  // (restoreTabFromSession)은 isParsing 을 세우지 않고 isTabSwitching 만 세운다. 그 두 await
+  // (persistCurrentSession → session.load) 동안 시작한 요약은 복원이 끝나며 증발했다.
+  it('탭 전환 중이면 요약을 시작하지 않는다 (세션-우선 복원 경로)', async () => {
+    useAppStore.setState({ isTabSwitching: true });
     await runSummarize();
     expect(M.summarizeCalls).toHaveLength(0);
     expect(useAppStore.getState().isGenerating).toBe(false);

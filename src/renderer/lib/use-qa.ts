@@ -1011,7 +1011,13 @@ export function useQa() {
     if (!trimmed || trimmed.length > MAX_QUESTION_LENGTH) return;
 
     const state = useAppStore.getState();
-    if (state.isGenerating || state.isQaGenerating || state.isCollectionBusy || !state.document) return;
+    // QA21(B-MED, 데이터손실): isParsing / isTabSwitching 추가 — 이 둘은 곧 store.document 가
+    // 교체된다는 뜻이고, 교체 시점의 clearQa() 가 질문과 (부분)답변을 화면·디스크 양쪽에서
+    // 지운다(직전 persistCurrentSession 은 isQaGenerating 이라 skip). useSummarize 가 QA20 에서
+    // 고친 결함의 정확한 쌍둥이 — 그때 요약 버튼만 고치고 이쪽을 함께 훑지 않았다.
+    // (handlePdfData 의 isQaGenerating 검사는 함수 진입 1회뿐이라 await parsePdf 동안 무방비다.)
+    if (state.isGenerating || state.isQaGenerating || state.isCollectionBusy
+        || state.isParsing || state.isTabSwitching || !state.document) return;
     // 교차 요약 준비(gather) 중에는 질문 차단 — isQaGenerating 세팅 전 창에서 끼어들어 qaStream/
     // qaRequestId 를 클로버링하던 race 방지(QA R: 컬렉션 요약 동시성).
     // RAG 인덱싱 중에는 질문 차단 — 부분 인덱스로 답변해 정확도가 떨어지는 문제 방지

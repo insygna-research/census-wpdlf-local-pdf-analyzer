@@ -219,7 +219,12 @@ let collectionSummaryInFlight = false;
  */
 export async function generateCollectionSummary(kind: CollectionSummaryKind): Promise<void> {
   const st = useAppStore.getState();
-  if (collectionSummaryInFlight || st.isGenerating || st.isQaGenerating || st.isCollectionBusy || st.ragState.isIndexing) return;
+  // QA21(B-MED): isParsing / isTabSwitching 추가 — 문서 교체가 예정된 상태에서 gather 를 시작하면
+  // isCollectionBusy 가 교체를 넘어 생존한다(resetSummaryState 가 초기화하지 않는 유일한 생성계
+  // 플래그). 그러면 새 문서에는 QaChat 이 없어 gather 의 유일한 취소 버튼이 사라진 채,
+  // 탭·자동저장·요약이 전부 막힌 "취소 불가 정지" 상태가 된다.
+  if (collectionSummaryInFlight || st.isGenerating || st.isQaGenerating || st.isCollectionBusy
+      || st.ragState.isIndexing || st.isParsing || st.isTabSwitching) return;
   const activeTab = st.openTabs.find((tb) => tb.filePath === st.document?.filePath);
   const activeDocHash = activeTab?.docHash;
   if (!activeDocHash) return;

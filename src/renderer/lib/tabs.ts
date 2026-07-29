@@ -34,19 +34,27 @@ import type { OpenTab, PdfDocument, PersistedSession } from '../types';
 // 결함 클래스 — 진입부 isTabSwitchBlocked 이후 persistCurrentSession/session.load await 동안
 // 아무 busy 플래그도 없어(세션-복원 경로는 isParsing 미사용), 연속 클릭 시 두 번째 전환이
 // 가드를 통과해 늦게 resolve 된 복원이 승자가 됐다(마지막 클릭이 아닌 탭이 활성으로 남음).
-// 모듈 플래그로 첫 await 이전에 창을 닫고 finally 에서 해제. store 이관(C5-M4)과 달리 모듈
-// 로컬로 충분: handlePdfData 직행 경로는 이 플래그를 봐선 안 된다 — openTabTarget 의 파일
+// 첫 await 이전에 창을 닫고 finally 에서 해제.
+//
+// QA21(B/A-MED, 데이터손실): **모듈 로컬 → store 이관**(collectionOpenInFlight 가 밟은 경로와
+// 동일 사유). "모듈 로컬로 충분" 했던 이전 판단이 틀렸다 — 이 플래그가 store 밖이라
+// useSummarize/use-qa/use-collection-summary 와 TabBar 가 볼 수 없었고, 그래서 전환의 두 await
+// (persistCurrentSession → session.load, index.bin 수 MB) 동안 요약·질문·교차요약 버튼이
+// 살아 있었다. 거기서 시작한 작업은 복원이 끝나며 clearStream/clearQa/setDocument 로 조용히
+// 폐기된다(세션-우선 복원 경로는 isParsing 을 세우지 않으므로 그 가드로도 막히지 않는다).
+//
+// ⚠️ 제약은 유지: handlePdfData 직행 경로는 이 플래그를 봐선 안 된다 — openTabTarget 의 파일
 // 재파싱 fallback(②)이 handlePdfData 를 호출하므로, 거기서 참조하면 자기 차단이 된다.
-let tabSwitchInFlight = false;
+const setTabSwitching = (v: boolean): void => { useAppStore.getState().setTabSwitching(v); };
 
 /** 생성/파싱 중 전환 차단 — handlePdfData 내부 가드와 동일 기준 (사전 차단으로 UX 개선).
  * isCollectionBusy(컬렉션 gather)도 포함 — gather 단계는 isQaGenerating 설정 전이라, 누락 시
  * in-flight 멤버 요약(클라우드)이 끊기지 않은 채 탭 전환되어 토큰 낭비/백그라운드 완주가 발생.
  * collectionOpenInFlight — openCollection 진행 중 탭 전환/재진입 차단(위 주석 참조).
- * tabSwitchInFlight — 탭 전환/닫기 복원 진행 중 재진입 차단(QA6-C M2, 위 주석 참조). */
+ * isTabSwitching — 탭 전환/닫기 복원 진행 중 재진입 차단(QA6-C M2 → QA21 store 이관). */
 export function isTabSwitchBlocked(): boolean {
   const s = useAppStore.getState();
-  return tabSwitchInFlight
+  return s.isTabSwitching
     || s.isGenerating || s.isQaGenerating || s.isParsing || s.isCollectionBusy || s.collectionOpenInFlight;
 }
 
@@ -147,7 +155,7 @@ export async function switchToTab(filePath: string): Promise<void> {
   if (!tab) return;
 
   // QA6-C M2: 첫 await 이전 동기 세팅 — 진행 중 두 번째 전환/닫기 재진입 차단. finally 해제.
-  tabSwitchInFlight = true;
+  setTabSwitching(true);
   try {
     // 현재 문서의 미저장 tail 보존 (persistChain 직렬화 — 내부에서 생성 중/게이트 검사)
     await persistCurrentSession();
@@ -157,7 +165,7 @@ export async function switchToTab(filePath: string): Promise<void> {
       useAppStore.getState().setError({ code: 'PDF_PARSE_FAIL', message: t('tabs.switchFail') });
     }
   } finally {
-    tabSwitchInFlight = false;
+    setTabSwitching(false);
   }
 }
 
@@ -174,7 +182,7 @@ export async function closeTab(filePath: string): Promise<void> {
   // 와 캡처된 eligible 목록이 desync 된다(손상은 없으나 표시 불일치).
   // tabSwitchInFlight(QA6-C M2)도 동일 사유 — 전환 중 대상/이웃 탭이 제거되면 복원이 지워진
   // 탭을 upsert 로 되살린다.
-  if (!isActive && (store.isCollectionBusy || store.collectionOpenInFlight || tabSwitchInFlight)) return;
+  if (!isActive && (store.isCollectionBusy || store.collectionOpenInFlight || store.isTabSwitching)) return;
 
   const tabs = store.openTabs;
   const idx = tabs.findIndex((tb) => tb.filePath === filePath);
@@ -183,7 +191,7 @@ export async function closeTab(filePath: string): Promise<void> {
   if (!isActive) return;
 
   // QA6-C M2: 활성 탭 닫기(flush+이웃 복원)도 전환과 동일 클래스 — 재진입 가드. finally 해제.
-  tabSwitchInFlight = true;
+  setTabSwitching(true);
   try {
     // 활성 탭 닫기: 디스크에 보존 후 정리
     await persistCurrentSession();
@@ -211,7 +219,7 @@ export async function closeTab(filePath: string): Promise<void> {
       s.setError({ code: 'PDF_PARSE_FAIL', message: t('tabs.switchFail') });
     }
   } finally {
-    tabSwitchInFlight = false;
+    setTabSwitching(false);
   }
 }
 
@@ -221,7 +229,7 @@ export async function openNewTabView(): Promise<void> {
   if (!store.document) return; // 이미 업로드 화면
   if (isTabSwitchBlocked()) return;
   // QA6-C M2: flush 중 전환/닫기 인터리브 차단(switchToTab 과 대칭)
-  tabSwitchInFlight = true;
+  setTabSwitching(true);
   try {
     await persistCurrentSession();
     const s = useAppStore.getState();
@@ -230,7 +238,7 @@ export async function openNewTabView(): Promise<void> {
     s.setSummary(null);
     s.setProgress(0);
   } finally {
-    tabSwitchInFlight = false;
+    setTabSwitching(false);
   }
 }
 

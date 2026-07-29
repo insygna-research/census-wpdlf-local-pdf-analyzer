@@ -415,6 +415,27 @@ describe('resetSummaryState abort propagation (R32 P2)', () => {
     expect(abortMock).toHaveBeenCalledTimes(2);
   });
 
+  // QA21(B-MED, 과금): 문서 교체 경로는 `clearQa()` → `setDocument()`(→resetSummaryState) 순서라,
+  // clearQa 가 qaRequestId 를 먼저 null 로 만들면 뒤따르는 abort 가 대상을 잃는다. 그러면
+  // in-flight 클라우드 Q&A 요청이 끊기지 않고 완주하며 계속 과금된다(응답은 버려지므로 순손실).
+  it('clearQa 가 qaRequestId 를 지우기 전에 abort 를 호출한다 (문서 교체 시 고아 요청 방지)', () => {
+    useAppStore.setState({ qaRequestId: 'qa-inflight-789', isQaGenerating: true });
+    useAppStore.getState().clearQa();
+    const abortMock = window.electronAPI.ai.abort as ReturnType<typeof vi.fn>;
+    expect(abortMock).toHaveBeenCalledWith('qa-inflight-789');
+    expect(useAppStore.getState().qaRequestId).toBeNull();
+  });
+
+  // 실제 순서 재현: clearQa 직후 resetSummaryState 가 돌아도 abort 는 정확히 1회여야 한다
+  // (clearQa 가 이미 끊었고 id 는 비었으므로 reset 은 중복 abort 하지 않는다).
+  it('clearQa → resetSummaryState 연쇄에서 abort 중복 호출이 없다', () => {
+    useAppStore.setState({ qaRequestId: 'qa-once', currentRequestId: null });
+    useAppStore.getState().clearQa();
+    useAppStore.getState().resetSummaryState();
+    const abortMock = window.electronAPI.ai.abort as ReturnType<typeof vi.fn>;
+    expect(abortMock).toHaveBeenCalledTimes(1);
+  });
+
   it('id 가 모두 null 이면 abort 가 호출되지 않는다', () => {
     useAppStore.setState({ qaRequestId: null, currentRequestId: null });
     useAppStore.getState().resetSummaryState();
