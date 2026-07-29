@@ -168,6 +168,37 @@ jobs:
 
       - run: npm run build && npx electron-builder --publish never
 
+      # 패키징 산출물 스모크 — **자산 업로드 이전**에 실행해 깨진 패키지가 릴리즈에 붙지 않게 한다.
+      #
+      # 왜 필요한가: 다른 E2E 스펙은 전부 `electron.launch({ args: ['.'] })` 로 **소스 트리의
+      # out/** 을 실행하므로 리포지토리의 node_modules 가 그대로 보인다 — 즉 "asar 안에 무엇이
+      # 들어갔는가"를 구조적으로 검증하지 못한다. v0.31.32 에서 renderer 전용 deps 6종을
+      # devDependencies 로 옮겨 asar 를 64.69→4.67MB 로 줄였는데(인스톨러 115.6→101.4MB), 그
+      # 변경의 안전망이 되어야 할 이 스펙이 정작 CI 어디에서도 호출되지 않고 있었다. 자동 업데이트
+      # (v0.31.30~) 도입 이후로는 잘못된 패키지가 곧 **전 사용자에게 자동 배포**되므로 릴리즈
+      # 경로에 게이트로 세운다.
+      #
+      # PACKAGED_SMOKE_REQUIRED=1 — 스펙의 skip 조건(산출물 없음/비-Windows)을 실패로 승격한다.
+      # 이게 없으면 exe 경로가 어긋나는 순간 "skip=green" 으로 게이트가 무증상 증발한다
+      # (이 저장소가 이미 겪은 실패 클래스: test.yml 4릴리즈 연속 red, QA20 D-MED 라벨 하드코딩).
+      #
+      # 브라우저 다운로드(`playwright install`) 불필요 — _electron.launch 는 패키징된 실행 파일을
+      # executablePath 로 직접 띄운다. 이 스펙 하나만 지정해 소스트리 스펙(ubuntu test 잡에서 이미
+      # 실행됨)의 중복 실행을 피한다.
+      - name: Packaged app smoke gate (asar)
+        env:
+          PACKAGED_SMOKE_REQUIRED: '1'
+        run: npx playwright test e2e/packaged-smoke.spec.ts
+
+      - name: Upload packaged smoke artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: packaged-smoke-failure-${{ github.run_id }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 7
+
       # R37 P2 (v0.18.23): 빌드 실패 시 dist/ 와 out/ 를 회수해야 재현 디버깅이 가능하다.
       # 현재까지는 stderr 만 GitHub Actions 로그에 남고 NSIS 중간 산출물(makensis 로그),
       # electron-vite 번들 산출물, electron-builder app-builder 결과물이 worker 종료와 함께 사라졌다.
