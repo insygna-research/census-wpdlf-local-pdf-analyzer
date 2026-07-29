@@ -3,6 +3,8 @@ import { useAppStore, whenSettingsCommitted } from './store';
 import { AiClient } from './ai-client';
 import { chunkText, chunkTextWithOverlap, chunkTextWithOverlapByPage } from './chunker';
 import { formatPageLabel, normalizeCitationPlacement, stripCitations } from './citation';
+// QA21(D-MED): 키워드 폴백 컨텍스트의 페이지 라벨 부착 — 요약 경로와 동일한 원천을 공유한다.
+import { labelParagraphsWithPages } from './use-summarize';
 import { t } from './i18n';
 import { VectorStore } from './vector-store';
 import { mergeSearchResults, resolveMembers } from './collection';
@@ -626,7 +628,15 @@ export async function resolveCollectionSearch(
   // #9: 강등 기준을 manifest 'ready' 수가 아니라 **실제 index.bin 로드 성공 store 수**로 한다.
   // manifest 는 ready 지만 index.bin 이 손상/IO 실패로 로드 안 된 멤버를 과대계상하면, 실제로는
   // 활성 1개로만 답변하는데도 강등 통지가 누락된다. stores 는 실로드된 인덱스만 담는다(부분 성공 반영).
-  const degraded = stores.length < 2;
+  //
+  // QA21(D-MED, 조용한 오답): `< 2` 는 **컬렉션이 붕괴한 경우만** 잡는다. ready 5개 중 2개가
+  // 로드에 실패해도 stores.length===3 이라 강등이 아니고, CollectionBar 는 manifest 기준
+  // readyCount 로 "5개 문서에서 검색" 을 계속 표시한다 — 사용자에게는 5개를 다 본 답변으로
+  // 보인다(loadMemberIndex 는 세션 부재/blob 손상/차원 불일치를 전부 null 로 삼킨다).
+  // 기대치(ready 로 판정된 멤버 수)에 **미달하면** 강등으로 본다. `< 2` 도 유지 —
+  // ready 가 1개뿐이라 기대치는 채웠지만 교차가 성립하지 않는 경우를 계속 잡기 위함.
+  const expectedReady = members.filter((m) => m.status === 'ready').length;
+  const degraded = stores.length < 2 || stores.length < expectedReady;
   return { ragResult, verifier: stores.length > 0 ? collectionVerifier(stores) : undefined, degraded };
 }
 
@@ -1092,7 +1102,28 @@ export function useQa() {
       if (ragResult) {
         relevantChunks = ragResult;
       } else {
-        relevantChunks = selectRelevantChunks(trimmed, doc.extractedText, settings.maxChunkSize);
+        // QA21(D-MED, 조용한 오답): 키워드 폴백 컨텍스트에도 `[p.N]` 라벨을 공급한다.
+        //
+        // 이전엔 doc.extractedText(라벨 없는 원문)를 그대로 넘겼는데, main 의 buildPrompt 는
+        // 'keywords' 타입만 빼고 **무조건** 인용 규칙을 주입한다 — 그 규칙은 "입력 텍스트의 각
+        // 단락은 [p.N] 로 시작합니다 / 거의 모든 주요 문장에 [p.N] 을 붙이세요" 라고 사실이 아닌
+        // 전제를 단언한다. 결과적으로 모델은 **알 수 없는 페이지 번호를 지어내고**, 그 출력은
+        // parseCitations → CitationButton 을 거쳐 정상 인용과 구분되지 않는 클릭 가능한 버튼이
+        // 된다(페이지 범위만 맞으면 검증도 통과). 게다가 이 경로에서는 useVerification 이
+        // ragIndex 를 요구해 환각 검증 2-pass 까지 함께 꺼진다.
+        //
+        // 도달 경로는 설정 오류가 아니라 **정상 사용**이다 — ragSearch 는 임계값(RAG_MIN_SCORE)을
+        // 넘는 청크가 없으면 null 을 반환하므로, 인덱스가 완전히 정상이어도 다소 동떨어진 질문
+        // 하나면 이 경로로 내려온다.
+        //
+        // 요약 경로(labelParagraphsWithPages)와 같은 원천을 쓰면 인용 기능이 폴백에서도 살아남고,
+        // enriched(Vision 이미지 설명)를 우선 쓰므로 "요약에는 그림 설명이 있는데 Q&A 는 못 보는"
+        // 비대칭(useRagBuilder 주석이 선언만 하고 실제로는 지역 변수만 교체하던 것)도 함께 닫힌다.
+        const pageSource = useAppStore.getState().enrichedPageTexts ?? doc.pageTexts;
+        const labeled = labelParagraphsWithPages(pageSource);
+        // pageTexts 가 비어 라벨을 못 만드는 퇴화 케이스만 원문 폴백(파서·세션복원 모두 채우므로 사실상 없음).
+        const fallbackSource = labeled || doc.extractedText;
+        relevantChunks = selectRelevantChunks(trimmed, fallbackSource, settings.maxChunkSize);
       }
       // PDF 원문 컨텍스트에 프롬프트 인젝션 방어 적용 (RAG/키워드 양쪽 모두)
       relevantChunks = sanitizePromptInput(relevantChunks);

@@ -312,6 +312,55 @@ describe('writeSession keepIndex (serialize-skip, Tier2)', () => {
     expect((await readSession(DIR, h))!.blob).toBeNull();
     expect(Number.isFinite((await listSessions(DIR))[0]!.byteSize)).toBe(true);
   });
+
+  // QA21(C-MED, 조용한 오답): 위 테스트는 meta 가 이미 "인덱스 없음"(embedModel:null, chunkCount:0)인
+  // **정직한** 경우만 다뤄, 진짜 문제 케이스를 구조적으로 비껴갔다 — 렌더러가 "인덱스 있음" 을
+  // 주장하는데 디스크에 index.bin 이 없는 경우. 그러면 manifest 에 거짓 엔트리가 남아
+  // semantic-search 는 후보로 통과시킨 뒤 결과에서 조용히 빼고(excludedCount 에도 미집계),
+  // 컬렉션은 ready 배지를 켠 채 그 문서를 빼고 답변한다.
+  it('keepIndex 인데 index.bin 이 없으면 manifest 가 "인덱스 있음" 을 주장하지 않는다', async () => {
+    const h = hashOf(9);
+    const r = await writeSession(DIR, {
+      // 렌더러는 인덱스가 있다고 믿는 상태(시그니처 유효) — 디스크는 비어 있다(LRU evict 직후 등)
+      meta: { ...metaOf(h), embedModel: 'nomic-embed-text', embedDim: 768, chunkCount: 42 },
+      session: { v: 1 }, blob: null, keepIndex: true, now: 1000,
+    });
+
+    // 저장 자체는 성공해야 한다 — 여기서 실패시키면 session.json 은 이미 기록됐는데 manifest 에
+    // 등록되지 않은 고아 디렉터리가 남는다(목록·검색·LRU 어디에도 안 잡힘).
+    expect(r.ok).toBe(true);
+    expect(r.indexMissing).toBe(true); // 렌더러가 시그니처를 무효화하고 전체 저장으로 회복하도록
+
+    const entry = (await listSessions(DIR)).find((e) => e.docHash === h)!;
+    expect(entry.embedModel, '없는 인덱스를 있다고 기록하면 안 된다').toBeNull();
+    expect(entry.embedDim).toBeNull();
+    expect(entry.chunkCount).toBe(0);
+    // chunkMeta 사이드카만 남는 상태(blob 없이 meta 만)도 만들지 않는다
+    expect((await readSession(DIR, h))!.blob).toBeNull();
+  });
+
+  // QA21(C-MED, 데이터손실): LRU 정리는 완전 무음이었다 — ok:true 로 반환돼 렌더러의 연속실패
+  // 통지망도 통과했고, 사용자는 비활성 탭의 요약·Q&A 가 사라진 이유를 알 수 없었다.
+  it('LRU 로 세션이 삭제되면 삭제된 문서명을 결과에 실어 알린다', async () => {
+    // 상한(30건)을 넘기도록 채운다 — 가장 오래된 것이 evict 된다.
+    for (let i = 0; i < SESSION_MAX_COUNT; i++) {
+      await writeSession(DIR, {
+        meta: { ...metaOf(hashOf(100 + i)), fileName: `doc-${i}.pdf` },
+        session: { v: i }, blob: null, now: 1000 + i,
+      });
+    }
+    const r = await writeSession(DIR, {
+      meta: { ...metaOf(hashOf(999)), fileName: 'newest.pdf' },
+      session: { v: 999 }, blob: null, now: 9999,
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.evicted, '삭제 사실이 호출자에게 전달돼야 한다(무음 금지)').toBeDefined();
+    expect(r.evicted).toContain('doc-0.pdf'); // 가장 오래된 것
+    // 삭제 성공분만 보고 — 목록에서도 실제로 사라졌는지 확인
+    const hashes = (await listSessions(DIR)).map((e) => e.docHash);
+    expect(hashes).not.toContain(hashOf(100));
+  });
 });
 
 describe('patchSession (부분저장 IPC, Tier3)', () => {

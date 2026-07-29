@@ -516,6 +516,8 @@ export const _translations = {
     en: 'The installer could not be started. The downloaded file may have been quarantined by antivirus or removed — download it again, or install manually from the releases page.',
   },
   'session.saveFailedNotice': { ko: '세션 저장에 반복 실패했습니다. 저장 공간·권한을 확인해주세요 — 요약·Q&A·검색 인덱스가 디스크에 보존되지 않아 다시 열면 사라집니다.', en: 'Session saving keeps failing. Check disk space/permissions — summaries, Q&A, and the search index are not being persisted and will be lost on reopen.' },
+  // QA21(C-MED): LRU 정리 통지. 이전엔 완전 무음이라 "요약이 왜 사라졌는지" 알 방법이 없었다.
+  'session.evictedNotice': { ko: '저장 공간 상한으로 오래된 분석 {count}개를 정리했습니다({names}). 해당 문서의 요약·Q&A·검색 인덱스는 다시 열면 재생성해야 합니다.', en: 'Cleaned up {count} old analyses to stay within the storage limit ({names}). Their summaries, Q&A, and search index will need to be regenerated when reopened.' },
 } as const;
 
 type TranslationKey = keyof typeof _translations;

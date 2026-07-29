@@ -112,6 +112,38 @@ describe('resolveCollectionSearch', () => {
     expect(out.degraded).toBe(true);
   });
 
+  // QA21(D-MED, 조용한 오답): 기존 판정 `stores.length < 2` 는 **컬렉션이 붕괴한 경우만** 잡는다.
+  // ready 3개 중 1개가 로드 실패해도 stores.length===2 라 degraded=false 였고, CollectionBar 는
+  // manifest 기준으로 "3개 문서에서 검색" 을 계속 표시했다 — 사용자에게는 3개를 다 본 답변으로
+  // 보인다. 기대치(ready 수)에 미달하면 강등으로 판정해야 한다.
+  it('ready 3개 중 1개만 로드 실패해도 강등 — 붕괴가 아니어도 "다 봤다" 고 표시하면 안 된다', async () => {
+    seedActiveIndex();
+    const cHash = 'c'.repeat(64);
+    const bHash = 'b'.repeat(64);
+    mockSessionList.mockResolvedValue([
+      manifestEntry(bHash, MODEL, 3),
+      manifestEntry(cHash, MODEL, 3),
+    ]);
+    // Beta 는 정상 로드, Gamma 는 실패(손상 blob/세션 부재) → 실로드 store = 활성 + Beta = 2개
+    mockSessionLoad.mockImplementation((h: string) => Promise.resolve(h === bHash ? memberBlob() : null));
+    useAppStore.setState({
+      document: {
+        id: 'd', fileName: 'Alpha.pdf', filePath: '/d/Alpha.pdf', pageCount: 5,
+        extractedText: 'x', pageTexts: [], chapters: [], images: [], createdAt: new Date(),
+      },
+      openTabs: [
+        { filePath: '/d/Alpha.pdf', fileName: 'Alpha.pdf', pageCount: 5, docHash: 'a'.repeat(64) },
+        { filePath: '/d/Beta.pdf', fileName: 'Beta.pdf', pageCount: 10, docHash: bHash },
+        { filePath: '/d/Gamma.pdf', fileName: 'Gamma.pdf', pageCount: 10, docHash: cHash },
+      ],
+      collection: { enabled: true, memberHashes: ['a'.repeat(64), bHash, cHash] },
+    });
+
+    const out = await resolveCollectionSearch('질문');
+    expect(out.ragResult).not.toBeNull();       // 답변은 된다(2개 문서 교차)
+    expect(out.degraded, 'ready 3개 기대에 실로드 2개 → 강등 고지 필요').toBe(true);
+  });
+
   it('교차 결과 없음(임베딩 실패)이면 ragResult null + degraded=true', async () => {
     seedActiveIndex();
     mockEmbed.mockResolvedValue({ success: false, error: 'fail' });

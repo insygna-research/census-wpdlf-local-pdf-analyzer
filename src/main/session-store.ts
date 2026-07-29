@@ -246,8 +246,17 @@ export async function readSessionMeta(
 export async function writeSession(
   sessionsDir: string,
   params: { meta: SessionSaveMeta; session: unknown; blob: ArrayBuffer | null; keepIndex?: boolean; now: number },
-): Promise<{ ok: boolean }> {
-  const { meta, session, blob, keepIndex, now } = params;
+  // QA21(C-MED): LRU 로 실제 삭제된 세션의 파일명. 지금까지 evict 는 **완전 무음**이었다 —
+  // ok:true 로 반환되므로 렌더러의 연속실패 통지망(recordSaveResult)도 통과했고, 사용자는
+  // 비활성 탭으로 돌아갔을 때 요약·Q&A 가 통째로 사라진 것을 발견할 뿐 이유를 알 수 없었다
+  // (그 데이터는 메모리에 없고 디스크 세션에만 있으므로 영구 소실이다). 호출자가 사용자에게
+  // 알릴 수 있도록 결과에 싣는다. 근본 수정(열린 탭 pin)은 별도 — 우선 무음을 없앤다.
+): Promise<{ ok: boolean; evicted?: string[]; indexMissing?: boolean }> {
+  const { session, blob, keepIndex, now } = params;
+  let { meta } = params;
+  // keepIndex 인데 디스크에 index.bin 이 없었는가(아래 정규화 참조) — 렌더러가 시그니처를
+  // 무효화하고 다음 저장에서 인덱스를 재기록하도록 알린다.
+  let indexMissing = false;
   if (!isValidDocHash(meta.docHash)) return { ok: false };
   try {
     const dir = sessionDir(sessionsDir, meta.docHash);
@@ -276,15 +285,36 @@ export async function writeSession(
       // blob 미전송이지만 아래 null→unlink 분기와 명확히 구분 — keepIndex 는 "그대로 둬라", null 은
       // "인덱스 없음, 지워라". byteSize 는 현재 두 사이드카 크기를 stat 해 반영.
       try { blobBytes = (await fsp.stat(indexBinPath)).size; } catch { blobBytes = 0; }
-      try {
-        metaBytes = (await fsp.stat(indexMetaPath)).size;
-      } catch {
-        // QA: 사이드카 부재(구버전 세션이 keepIndex 경로 진입 — session.json 의 chunkMeta 가 위에서
-        // strip 되어 사라졌다)면 strip 된 chunkMeta 로 1회 self-heal 생성. "keepIndex ⟹ 사이드카 존재"
-        // 불변식을 코드로 봉인해 chunkMeta 영구 소실(→재임베딩/검색 누락)을 차단.
-        const metaStr = metaStrOf();
-        await writeFileAtomic(indexMetaPath, metaStr);
-        metaBytes = Buffer.byteLength(metaStr);
+      // QA21(C-MED, 조용한 오답): keepIndex 의 전제는 "디스크에 index.bin 이 있다" 인데 그걸
+      // 검증하지 않았다. 부재해도 blobBytes=0 으로 삼키고 **렌더러가 보낸 인덱스 메타를 그대로
+      // manifest 에 기록**해, 디스크에 인덱스가 없는데 "청크 N개 있음" 이라고 주장하는 엔트리가
+      // 남았다. 그 거짓 주장은 조용한 누락으로 전파된다:
+      //   - semantic-search: 후보 통과 → blob 로드 실패 → 결과에서 빠지고 excludedCount 에도 미집계
+      //   - collection: ready 배지 점등 → 컬렉션 Q&A 가 그 문서를 빼고 답변
+      // 도달 경로는 LRU evict 로 디렉터리가 지워진 뒤의 keepIndex 저장(그리고 blob 64MB 초과
+      // 강등 후 시그니처가 남는 경우).
+      //
+      // 저장 자체를 실패시키지는 않는다 — session.json 은 이미 기록됐고, 여기서 중단하면
+      // manifest 에 등록되지 않은 고아 디렉터리가 남는다(목록·검색·LRU 어디에도 안 잡힘).
+      // 대신 ①엔트리의 인덱스 메타를 "없음" 으로 정규화해 거짓 주장을 막고, ②사이드카를 정리해
+      // "chunkMeta 는 있고 blob 은 없는" 상태(아래 self-heal 이 만들던, 이 코드가 피하려던 실패
+      // 모드)를 남기지 않으며, ③indexMissing 을 반환해 렌더러가 시그니처를 무효화하고 다음
+      // 저장에서 blob 을 포함한 전체 저장으로 인덱스를 재기록하게 한다.
+      if (blobBytes === 0) {
+        try { await fsp.unlink(indexMetaPath); } catch { /* 없으면 무시 */ }
+        indexMissing = true;
+        meta = { ...meta, embedModel: null, embedDim: null, chunkCount: 0 };
+      } else {
+        try {
+          metaBytes = (await fsp.stat(indexMetaPath)).size;
+        } catch {
+          // QA: 사이드카 부재(구버전 세션이 keepIndex 경로 진입 — session.json 의 chunkMeta 가 위에서
+          // strip 되어 사라졌다)면 strip 된 chunkMeta 로 1회 self-heal 생성. "keepIndex ⟹ 사이드카 존재"
+          // 불변식을 코드로 봉인해 chunkMeta 영구 소실(→재임베딩/검색 누락)을 차단.
+          const metaStr = metaStrOf();
+          await writeFileAtomic(indexMetaPath, metaStr);
+          metaBytes = Buffer.byteLength(metaStr);
+        }
       }
     } else if (blob) {
       // index.bin 과 짝을 이루는 chunkMeta 를 함께 기록(둘 다 새 인덱스 기준).
@@ -327,6 +357,7 @@ export async function writeSession(
     const others = manifest.entries.filter((e) => e.docHash !== meta.docHash);
     const next: SessionManifestEntry[] = [...others, entry];
 
+    const evictedNames: string[] = [];
     const evict = enforceLru(next);
     if (evict.length > 0) {
       const evictSet = new Set(evict.filter((h) => h !== meta.docHash));
@@ -340,6 +371,10 @@ export async function writeSession(
         try {
           await fsp.rm(sessionDir(sessionsDir, h), { recursive: true, force: true });
           removed.add(h);
+          // 삭제 **성공분만** 통지 대상 — rm 실패분은 엔트리가 보존돼 다음 저장에서 재시도되므로
+          // 아직 사라진 것이 아니다.
+          const gone = next.find((e) => e.docHash === h);
+          if (gone?.fileName) evictedNames.push(gone.fileName);
         } catch { /* rm 실패 → 엔트리 보존, 다음 저장에서 재시도 */ }
       }
       manifest.entries = next.filter((e) => !removed.has(e.docHash));
@@ -348,7 +383,11 @@ export async function writeSession(
     }
     manifest.schemaVersion = SESSION_SCHEMA_VERSION;
     await saveManifest(sessionsDir, manifest);
-    return { ok: true };
+    return {
+      ok: true,
+      ...(evictedNames.length > 0 ? { evicted: evictedNames } : {}),
+      ...(indexMissing ? { indexMissing: true } : {}),
+    };
   } catch (err) {
     console.warn('[session] save failed:', (err as Error)?.message);
     return { ok: false };

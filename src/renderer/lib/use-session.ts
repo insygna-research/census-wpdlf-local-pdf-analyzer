@@ -451,6 +451,29 @@ async function doPersistCurrentSession(flush = false): Promise<void> {
     if (ok && fullSerialized) {
       persistedIndexSig = { ref: new WeakRef(ragIndex), revision: ragIndex.revision };
     }
+    // QA21(C-MED): main 이 "keepIndex 인데 디스크에 index.bin 이 없다" 를 알리면 시그니처를
+    // 무효화한다. 그대로 두면 다음 자동저장도 idxUnchanged=true 로 판정해 **같은 keepIndex 저장을
+    // 영원히 반복**하고, 디스크 인덱스는 끝내 복구되지 않는다(재오픈 시 재임베딩 강제).
+    // 무효화하면 다음 저장이 blob 을 포함한 전체 저장으로 내려가 인덱스를 재기록하고 자가회복한다.
+    // (main 은 이 경우에도 저장 자체는 성공시키고 manifest 의 인덱스 메타만 "없음" 으로 정규화한다 —
+    // 거짓 "인덱스 있음" 이 검색·컬렉션에서 조용한 누락으로 전파되는 것을 막기 위함.)
+    if ((result as { indexMissing?: boolean })?.indexMissing || (!ok && keepIndex)) {
+      persistedIndexSig = null;
+    }
+    // QA21(C-MED, 데이터손실): LRU 정리는 지금까지 **완전 무음**이었다 — ok:true 로 반환되므로
+    // 아래 연속실패 통지망도 통과했고, 사용자는 비활성 탭으로 돌아갔을 때 요약·Q&A 가 사라진
+    // 것을 발견할 뿐 이유를 알 수 없었다(그 데이터는 메모리에 없고 디스크 세션에만 있어 영구
+    // 소실이다). 삭제된 문서명을 통지해 최소한 원인을 알 수 있게 한다.
+    // (열린 탭을 evict 대상에서 제외하는 pin 은 별도 작업 — main 이 열린 탭 집합을 모른다.)
+    const evicted = (result as { evicted?: unknown })?.evicted;
+    if (Array.isArray(evicted) && evicted.length > 0) {
+      const names = evicted.filter((n): n is string => typeof n === 'string');
+      if (names.length > 0) {
+        useAppStore.getState().setNotice({
+          message: t('session.evictedNotice', { count: String(names.length), names: names.slice(0, 3).join(', ') }),
+        });
+      }
+    }
     recordSaveResult(ok);
   } catch {
     // 저장 실패는 작업을 막지 않음(best-effort) — 단 연속 실패는 집계해 임계 초과 시 1회 통지(E3)
