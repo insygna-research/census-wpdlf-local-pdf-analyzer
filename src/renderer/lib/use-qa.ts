@@ -2,7 +2,7 @@ import { useRef, useEffect, useCallback } from 'react';
 import { useAppStore, whenSettingsCommitted } from './store';
 import { AiClient } from './ai-client';
 import { chunkText, chunkTextWithOverlap, chunkTextWithOverlapByPage } from './chunker';
-import { formatPageLabel, normalizeCitationPlacement, stripCitations } from './citation';
+import { formatPageLabel, normalizeCitationPlacement, stripCitations, sanitizeDocLabelName } from './citation';
 // QA21(D-MED): 키워드 폴백 컨텍스트의 페이지 라벨 부착 — 요약 경로와 동일한 원천을 공유한다.
 import { labelParagraphsWithPages } from './use-summarize';
 import { t } from './i18n';
@@ -544,8 +544,9 @@ export async function collectionRagSearch(
       const page = pageLabel ? ` ${pageLabel.replace(/^\[|\]$/g, '')}` : ''; // "p.N"
       // QA9(B-LOW): 파일명에 예약문자([ ] | 개행)나 120자 초과가 있으면 CITATION_REGEX 의 doc 그룹
       // ([^[\]|\n]{1,120})에 안 걸려 교차인용 라벨이 비클릭 plain text 로 강등됐다(페이지 네비 상실).
-      // 파서 문법에 맞게 예약문자를 공백치환하고 110자로 절단(뒤 " p.N" 여유). 전부 제거되면 페이지만.
-      const safeName = r.fileName.replace(/[[\]|\n]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 110).trim();
+      // QA21(D-MED): 인라인 정규식 → citation.ts 의 순수 함수로 이관. CitationButton 의 클릭
+      // 해석이 **같은 함수**를 써야 라벨↔탭 매칭이 어긋나지 않는다(그 함수의 주석 참조).
+      const safeName = sanitizeDocLabelName(r.fileName);
       const label = safeName ? `[${safeName}${page}]` : (pageLabel || '');
       return { r, segment: `${label}\n${r.text}` };
     });

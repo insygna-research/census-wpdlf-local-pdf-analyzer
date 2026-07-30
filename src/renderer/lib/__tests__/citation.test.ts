@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { parseCitations, formatPageLabel, clampCitationPage, CITATION_REGEX, normalizeCitationPlacement, stripCitations } from '../citation';
+import { parseCitations, formatPageLabel, clampCitationPage, CITATION_REGEX, normalizeCitationPlacement, stripCitations, sanitizeDocLabelName } from '../citation';
 
 describe('parseCitations', () => {
   it('단일 인용을 3 세그먼트로 분리한다', () => {
@@ -335,6 +335,48 @@ describe('stripCitations (C-L1)', () => {
 
 // R46 보안: 두 인용 정규식의 ReDoS 회귀 가드. 악성 입력(악성 PDF→LLM 답변)에서도
 // 정규식 처리가 선형 시간에 끝나야 한다(과거 isStandaloneCitationLine 지수 / CITATION_REGEX 이차).
+// QA21(D-MED): 라벨 생산(use-qa)과 클릭 해석(CitationButton)이 공유하는 단일 출처.
+// 핵심 불변식: sanitize 한 이름은 **CITATION_REGEX 의 doc 그룹으로 다시 파싱돼 원래대로 나와야**
+// 한다. 이게 깨지면 라벨은 만들어지지만 클릭 해석이 탭을 못 찾는다(왕복 실패 = 인용 사망).
+describe('sanitizeDocLabelName — 라벨 왕복 불변식', () => {
+  const roundTrip = (fileName: string): string | undefined => {
+    const safe = sanitizeDocLabelName(fileName);
+    const segs = parseCitations(`[${safe} p.5]`);
+    return segs.find((s) => s.type === 'citation')?.docName;
+  };
+
+  it('파서 예약문자([ ] |)를 공백으로 치환해 doc 그룹에 걸리게 한다', () => {
+    expect(sanitizeDocLabelName('[2024] Annual Report.pdf')).toBe('2024 Annual Report.pdf');
+    expect(sanitizeDocLabelName('a|b.pdf')).toBe('a b.pdf');
+  });
+
+  it('연속 공백을 하나로 접고 양끝을 다듬는다 (파서가 doc↔p. 경계를 공백으로 잡으므로)', () => {
+    expect(sanitizeDocLabelName('  Annual   Report.pdf  ')).toBe('Annual Report.pdf');
+  });
+
+  it('110자로 절단한다 (doc 그룹 상한 120 − " p.N" 여유)', () => {
+    const long = 'x'.repeat(200) + '.pdf';
+    expect(sanitizeDocLabelName(long).length).toBe(110);
+  });
+
+  it('왕복: 예약문자·연속공백·초장문 파일명 모두 파싱 결과가 sanitize 결과와 일치', () => {
+    for (const name of [
+      '[2024] Annual Report.pdf',
+      'a|b|c.pdf',
+      '  spaced   out.pdf  ',
+      '한글 파일 이름.pdf',
+      'x'.repeat(200) + '.pdf',
+      'Service Discovery.pdf',
+    ]) {
+      expect(roundTrip(name), name).toBe(sanitizeDocLabelName(name));
+    }
+  });
+
+  it('전부 예약문자면 빈 문자열 — 호출자가 페이지만 라벨링하도록', () => {
+    expect(sanitizeDocLabelName('[]|')).toBe('');
+  });
+});
+
 describe('ReDoS 회귀 가드 (R46)', () => {
   it('CITATION_REGEX: 닫히지 않은 [ + 다량 공백 입력도 즉시 처리(선형 — 카타스트로픽이면 수 초+)', () => {
     const evil = '[p.' + ' '.repeat(100000);

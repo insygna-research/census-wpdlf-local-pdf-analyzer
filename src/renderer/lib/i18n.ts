@@ -29,6 +29,9 @@ export const _translations = {
   'citation.crossTooltip': { ko: '클릭하여 {name} {page}페이지로 이동', en: 'Click to open {name} on page {page}' },
   'citation.crossAria': { ko: '{name} {page}페이지 원문 열기', en: 'Open {name} page {page}' },
   'citation.docClosed': { ko: '{name} 문서가 열려 있지 않아 이동할 수 없습니다', en: 'Cannot navigate — {name} is not open' },
+  // QA21(D-MED): 같은 이름의 문서가 둘 이상 열려 있으면 어느 쪽인지 판정할 수 없다 — 이전에는
+  // 앞의 것으로 조용히 점프했다(활성 문서와 이름이 겹치면 활성 문서로). 표면화가 정답.
+  'citation.ambiguousDoc': { ko: '{name} 이라는 이름의 문서가 여러 개 열려 있어 어느 문서인지 판정할 수 없습니다 — 하나를 닫으면 이동할 수 있습니다', en: 'Several open documents are named {name}, so the source cannot be determined — close one to navigate' },
   'pdfviewer.title': { ko: '원문 보기', en: 'Source Viewer' },
   'pdfviewer.close': { ko: '뷰어 닫기', en: 'Close viewer' },
   'pdfviewer.loading': { ko: 'PDF 로드 중...', en: 'Loading PDF...' },

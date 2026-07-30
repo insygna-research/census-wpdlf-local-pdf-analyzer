@@ -236,4 +236,65 @@ describe('CitationButton — 교차 문서 인용 (multi-doc Phase 2)', () => {
     const el = screen.getByText('[Beta.pdf p.99]');
     expect(el.getAttribute('aria-disabled')).toBe('true');
   });
+
+  // QA21(D-MED): 라벨은 sanitizeDocLabelName 을 거친 값인데 해석은 원본 fileName 과 정확 일치를
+  // 요구해, 파일명에 파서 예약문자가 있으면 **열려 있는 문서로의 인용이 전부 사망**했다.
+  it('파일명에 예약문자([ ])가 있어도 sanitize 된 라벨로 탭을 찾는다', async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({
+      openTabs: [
+        { filePath: '/d/Alpha.pdf', fileName: 'Alpha.pdf', pageCount: 5, docHash: 'a'.repeat(64) },
+        // 실제 파일명에 대괄호 — 라벨은 `2024 Annual Report.pdf` 로 정규화돼 생성된다
+        { filePath: '/d/rep.pdf', fileName: '[2024]  Annual Report.pdf', pageCount: 9, docHash: 'b'.repeat(64) },
+      ],
+    });
+    mockSwitchToTab.mockImplementation(async (fp: string) => {
+      useAppStore.setState((s) => ({ document: { ...s.document!, filePath: fp, fileName: '[2024]  Annual Report.pdf', pageCount: 9 } }));
+    });
+
+    render(<CitationButton page={8} docName="2024 Annual Report.pdf" />);
+    const btn = screen.getByRole('button'); // 비활성 span 이 아니라 클릭 가능 버튼이어야 한다
+    expect(btn.getAttribute('aria-disabled')).toBeNull();
+    await user.click(btn);
+    expect(mockSwitchToTab).toHaveBeenCalledWith('/d/rep.pdf');
+    expect(useAppStore.getState().citationTarget).toEqual({ page: 8 });
+  });
+
+  // QA21(D-MED, 조용한 오답): 같은 이름의 문서가 둘 열려 있으면 이전엔 find 로 앞의 것을 집었고,
+  // 활성 문서까지 같은 이름이면 isCrossDoc=false 로 **활성 문서의 그 페이지로 점프**했다.
+  // 어느 쪽인지 알 수 없으므로 비활성 + 전용 안내로 표면화한다.
+  it('동명 문서가 둘 열려 있으면 조용히 앞의 것으로 점프하지 않고 비활성', async () => {
+    const user = userEvent.setup();
+    useAppStore.setState({
+      openTabs: [
+        { filePath: '/d/Alpha.pdf', fileName: 'Alpha.pdf', pageCount: 5, docHash: 'a'.repeat(64) },
+        { filePath: '/x/report.pdf', fileName: 'report.pdf', pageCount: 9, docHash: 'b'.repeat(64) },
+        { filePath: '/y/report.pdf', fileName: 'report.pdf', pageCount: 30, docHash: 'c'.repeat(64) },
+      ],
+    });
+    render(<CitationButton page={8} docName="report.pdf" />);
+    const el = screen.getByText('[report.pdf p.8]');
+    expect(el.getAttribute('aria-disabled')).toBe('true');
+    await user.click(el);
+    expect(mockSwitchToTab).not.toHaveBeenCalled();
+    expect(useAppStore.getState().citationTarget).toBeNull();
+  });
+
+  it('동명 문서 중 하나가 활성이어도 비활성 — 활성 문서로 오점프하지 않는다', () => {
+    useAppStore.setState({
+      document: {
+        id: 'active', fileName: 'report.pdf', filePath: '/x/report.pdf', pageCount: 5,
+        extractedText: '', pageTexts: [], chapters: [], images: [], createdAt: new Date(),
+      },
+      openTabs: [
+        { filePath: '/x/report.pdf', fileName: 'report.pdf', pageCount: 5, docHash: 'a'.repeat(64) },
+        { filePath: '/y/report.pdf', fileName: 'report.pdf', pageCount: 30, docHash: 'b'.repeat(64) },
+      ],
+      citationTarget: null,
+    });
+    // 활성 문서(5p) 범위 안인 page=3 — 구 코드는 isCrossDoc=false 로 판정해 그대로 점프했다
+    render(<CitationButton page={3} docName="report.pdf" />);
+    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.getByText('[p.3]').getAttribute('aria-disabled')).toBe('true');
+  });
 });

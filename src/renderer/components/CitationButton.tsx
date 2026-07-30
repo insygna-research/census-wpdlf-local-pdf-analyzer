@@ -2,7 +2,7 @@
 // Plan SC: SC-02 (인용 토큰 → 클릭 가능), SC-03 (클릭 → 뷰어 스크롤)
 import { useAppStore } from '../lib/store';
 import { useT } from '../lib/i18n';
-import { clampCitationPage } from '../lib/citation';
+import { clampCitationPage, sanitizeDocLabelName } from '../lib/citation';
 import { setCitationReturnFocus } from '../lib/citation-focus';
 import { switchToTab } from '../lib/tabs';
 
@@ -28,10 +28,22 @@ export function CitationButton({ page, docName }: CitationButtonProps) {
   const activeFileName = useAppStore((s) => s.document?.fileName ?? null);
   const activePageCount = useAppStore((s) => s.document?.pageCount ?? 0);
 
-  // docName 이 현재 문서와 같으면 교차 문서가 아님(단일 문서 인용처럼 동작).
-  const isCrossDoc = docName !== undefined && docName !== activeFileName;
-  // 교차 문서면 출처 탭을 찾아 그 pageCount 로 검증·전환. 못 찾으면 targetTab=undefined.
-  const targetTab = isCrossDoc ? openTabs.find((tb) => tb.fileName === docName) : undefined;
+  // QA21(D-MED): 라벨은 sanitizeDocLabelName 을 거친 값이므로 **탭 이름도 같은 함수로 정규화해
+  // 비교**해야 한다. 이전엔 가공 전 원본 fileName 과 정확 일치를 요구해, 파일명에 `[ ] |`·연속
+  // 공백이 있거나 110자를 넘으면 그 문서로의 인용이 전부 "문서 닫힘" 으로 비활성화됐다.
+  const matchesDoc = (name: string | null): boolean =>
+    name !== null && docName !== undefined && sanitizeDocLabelName(name) === docName;
+  const isCrossDoc = docName !== undefined && !matchesDoc(activeFileName);
+  // 교차 문서면 출처 탭을 찾아 그 pageCount 로 검증·전환.
+  // QA21(D-MED): **동명 문서 모호성**을 조용히 넘기지 않는다. 다른 폴더의 같은 이름
+  // (`report.pdf` 둘)이 열려 있으면 이전 코드는 `find` 로 앞의 것을 집었고, 활성 문서까지 같은
+  // 이름이면 isCrossDoc=false 가 되어 **활성 문서의 그 페이지로 점프**했다 — 사용자는 다른
+  // 문서를 보고 있다는 사실을 알 수 없었다(조용한 오답). 후보가 2개 이상이면 어느 쪽인지
+  // 알 방법이 없으므로 비활성 + 전용 안내로 표면화한다. 잘못된 곳으로 확신을 갖고 점프하는
+  // 것보다 "판단 불가" 를 보여주는 편이 낫다.
+  const candidates = docName !== undefined ? openTabs.filter((tb) => matchesDoc(tb.fileName)) : [];
+  const ambiguous = candidates.length > 1;
+  const targetTab = isCrossDoc && !ambiguous ? candidates[0] : undefined;
   const pageCount = isCrossDoc ? (targetTab?.pageCount ?? 0) : activePageCount;
 
   const validPage = clampCitationPage(page, pageCount);
@@ -42,12 +54,19 @@ export function CitationButton({ page, docName }: CitationButtonProps) {
   // 라벨: 교차 문서는 출처를 함께 표기 (`[문서명 p.N]`), 단일 문서는 기존 `[p.N]`
   const label = isCrossDoc && docName ? `[${docName} p.${page}]` : `[p.${page}]`;
 
-  // 교차 문서인데 해당 탭이 닫혀 있거나 범위를 벗어나면 클릭 불가
-  if (validPage === null || (isCrossDoc && !targetTab)) {
+  // 교차 문서인데 해당 탭이 닫혀 있거나 모호하거나 범위를 벗어나면 클릭 불가.
+  // ambiguous 는 활성 문서와 이름이 겹치는 경우도 포함하므로 isCrossDoc 과 독립적으로 검사한다
+  // (동명 두 문서 중 하나가 활성이면 isCrossDoc=false 로 판정돼 그냥 통과했었다).
+  if (validPage === null || ambiguous || (isCrossDoc && !targetTab)) {
+    const title = ambiguous
+      ? t('citation.ambiguousDoc', { name: docName ?? '' })
+      : isCrossDoc && !targetTab
+        ? t('citation.docClosed', { name: docName ?? '' })
+        : t('citation.invalid', { page });
     return (
       <span
         className="inline-block px-1 mx-0.5 text-xs text-gray-400 dark:text-gray-500 border border-dashed border-gray-300 dark:border-gray-600 rounded cursor-not-allowed"
-        title={isCrossDoc && !targetTab ? t('citation.docClosed', { name: docName ?? '' }) : t('citation.invalid', { page })}
+        title={title}
         aria-disabled="true"
       >
         {label}
