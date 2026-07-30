@@ -402,6 +402,24 @@ async function ragSearch(question: string, signal?: AbortSignal): Promise<string
 
     const queryEmbedding = result.embeddings[0];
     if (!queryEmbedding) return null;
+
+    // QA21(D-LOW, 조용한 강등): 질의 임베딩 모델이 인덱스를 만든 모델과 다르면 이 검색은 무의미하다.
+    // 재빌드 트리거 key 는 `${docId}:${provider}:${enrichTag}` 로 **임베딩 모델을 포함하지 않는데**,
+    // ai:embed / ai:check-embed-model 은 매 호출마다 설치 목록에서 모델을 재해석한다. 그래서 세션
+    // 중 임베딩 모델 구성이 바뀌면(우선순위가 더 높은 모델을 새로 pull, 또는 쓰던 모델을 rm)
+    // 인덱스는 옛 모델로 남고 질의만 새 모델로 나간다:
+    //  - 차원이 다르면(nomic 768 vs mxbai 1024) VectorStore 의 차원 가드가 항상 [] 를 반환해
+    //    **RAG 배지는 초록인데 키워드로 무음 강등**된다.
+    //  - 차원이 같으면 더 나쁘다 — 의미 없는 유사도로 엉뚱한 청크를 골라 조용한 오답이 된다.
+    // 근본 수정(rebuild key 에 모델 포함)은 설계 변경이라 보류하고, 여기서 **표면화**한다.
+    // ragState.error 는 QaChat 헤더에 고지되고, use-session 의 preserveDiskIndex 를 켜서
+    // 디스크의 정상 인덱스가 "인덱스 없음" 으로 오판돼 삭제되는 것도 함께 막는다(QA19 와 동형).
+    // 양쪽 모델명이 모두 확인될 때만 비교한다 — 미확인(undefined)에 오탐하지 않기 위함.
+    if (result.model && ragIndex.model && result.model !== ragIndex.model) {
+      useAppStore.getState().setRagState({ error: 'embedModelChanged' });
+      return null;
+    }
+
     const results = ragIndex.search(queryEmbedding, RAG_TOP_K, RAG_MIN_SCORE);
 
     if (results.length === 0) return null;

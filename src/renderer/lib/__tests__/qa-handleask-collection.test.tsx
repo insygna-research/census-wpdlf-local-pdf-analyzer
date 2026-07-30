@@ -219,6 +219,44 @@ describe('handleAsk — 에러 경로 짝 불변식 (QA21)', () => {
   });
 });
 
+// QA21(D-LOW, 조용한 강등): 재빌드 트리거 key 에 임베딩 모델이 없어, 세션 중 모델 구성이 바뀌면
+// (우선순위 높은 모델 새로 pull / 쓰던 모델 rm) 인덱스는 옛 모델로 남고 질의만 새 모델로 나간다.
+// 차원이 다르면 검색이 항상 빈 결과 → RAG 배지 초록인 채 키워드로 무음 강등, 차원이 같으면
+// 의미 없는 유사도로 엉뚱한 청크를 고른다. 표면화가 최소 조치.
+describe('ragSearch — 임베딩 모델 변경 표면화 (QA21)', () => {
+  it('질의 모델이 인덱스 모델과 다르면 ragState.error 로 고지하고 검색을 쓰지 않는다', async () => {
+    seed(false); // 활성 인덱스 모델 = nomic-embed-text
+    // 세션 중 임베딩 모델이 바뀐 상황 — ai:embed 가 다른 모델명을 반환
+    mockEmbed.mockResolvedValue({ success: true, embeddings: [[1, 0, 0]], model: 'mxbai-embed-large' });
+
+    const { result } = renderHook(() => useQa());
+    await act(async () => { await result.current.handleAsk('인덱스 청크에만 있는 내용?'); });
+
+    expect(useAppStore.getState().ragState.error).toBe('embedModelChanged');
+    // 인덱스 청크가 컨텍스트로 쓰이지 않았다(무의미한 유사도로 고른 청크를 근거로 쓰지 않는다)
+    expect(M.prompt).not.toContain('활성 ALPHA 본문');
+  });
+
+  it('모델이 같으면 정상 검색 — 오탐하지 않는다', async () => {
+    seed(false);
+    const { result } = renderHook(() => useQa());
+    await act(async () => { await result.current.handleAsk('핵심 알려줘'); });
+
+    expect(useAppStore.getState().ragState.error).toBeNull();
+    expect(M.prompt).toContain('활성 ALPHA 본문');
+  });
+
+  it('모델명이 확인되지 않으면(undefined) 비교하지 않는다 — 오탐 방지', async () => {
+    seed(false);
+    mockEmbed.mockResolvedValue({ success: true, embeddings: [[1, 0, 0]] }); // model 없음
+    const { result } = renderHook(() => useQa());
+    await act(async () => { await result.current.handleAsk('핵심 알려줘'); });
+
+    expect(useAppStore.getState().ragState.error).toBeNull();
+    expect(M.prompt).toContain('활성 ALPHA 본문');
+  });
+});
+
 describe('handleAsk — 컬렉션 글루 (CI 통합)', () => {
   it('컬렉션 모드: 교차 문서 컨텍스트로 프롬프트 구성 + 답변 커밋 + 강등 notice 없음', async () => {
     seed(true);

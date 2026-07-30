@@ -28,13 +28,16 @@ export function SettingsPanel() {
   // QA post-v0.31.15: isCollectionBusy(교차 요약 gather)도 포함 — gather 단계는 isQaGenerating
   // 세팅 전이라, 누락 시 provider/model 변경이 열려 useRagBuilder 재빌드가 진행 중 인덱스를 churn.
   const isCollectionBusy = useAppStore((s) => s.isCollectionBusy);
-  const aiBusy = isGenerating || isQaGenerating || isCollectionBusy;
-  // QA20(A·C 수렴): 업데이트 설치는 **앱을 종료시키므로** aiBusy 보다 넓은 게이트가 필요하다 —
-  // RAG 인덱싱 중이면 이미 지불한 클라우드 임베딩이 통째로 버려지고(부분 인덱스는 미영속),
-  // PDF 파싱/OCR 중이면 수 분 작업이 소멸한다. 다른 설정 항목은 기존 aiBusy 기준을 유지한다.
   const isParsing = useAppStore((s) => s.isParsing);
   const ragIndexing = useAppStore((s) => s.ragState.isIndexing);
-  const installBusy = aiBusy || isParsing || ragIndexing;
+  // QA21(B-LOW): ragIndexing 을 aiBusy 에 포함 — QA20 이 installBusy 에는 넣었으면서 aiBusy 는
+  // 그대로 둔 비대칭이었다. 인덱싱 중에 Ollama 재시작·모델 pull·세션 전체삭제가 열려 있었고,
+  // 재시작은 in-flight `ai:embed` 를 끊어 error:'embedFailed' 로 수렴시킨다 — 파괴적이지는
+  // 않지만 사용자에게는 **원인 불명의 인덱싱 실패**로 보인다(자기가 누른 버튼이 원인임을 알 수 없다).
+  const aiBusy = isGenerating || isQaGenerating || isCollectionBusy || ragIndexing;
+  // QA20(A·C 수렴): 업데이트 설치는 **앱을 종료시키므로** aiBusy 보다 넓은 게이트가 필요하다 —
+  // PDF 파싱/OCR 중이면 수 분 작업이 소멸한다(인덱싱은 이제 aiBusy 가 커버).
+  const installBusy = aiBusy || isParsing;
   const t = useT();
 
   const [draft, setDraft] = useState<AppSettings>({ ...settings });

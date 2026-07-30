@@ -205,6 +205,13 @@ jobs:
       # if: failure() — 성공 시 30~150MB artifact 업로드를 피해 일반 흐름의 잡 시간을 늘리지 않음.
       # path 는 dist/ + out/ 만 (workspace 내부). electron-builder 글로벌 캐시(%LOCALAPPDATA%)
       # 는 Windows runner 의 ~ 확장이 불안정해 제외; 필요해지면 별도 step 으로 LOCALAPPDATA 사용.
+      #
+      # QA21(A-LOW): dist/win-unpacked 는 제외한다. 이 step 이 처음 쓰인 시점에는 빌드 자체가
+      # 실패한 상태(dist 가 비어 있거나 부분)를 상정했지만, 이제는 그 뒤의 패키징 스모크 게이트가
+      # 실패할 수 있고 그때 dist 는 **완전한** 상태다 — win-unpacked(~250MB) + installer(101MB)
+      # 를 올리려 하면 콜드 러너의 빌드 시간과 합쳐 30분 잡 상한에 근접해, 정작 진단이 필요한
+      # 순간에 업로드가 잘린다. installer·blockmap·latest.yml 과 out/ 만으로 재현에 충분하고,
+      # win-unpacked 는 installer 에서 다시 만들 수 있다.
       # actions/upload-artifact@v4.6.2 (gh api 로 tag→commit SHA 확인 후 핀)
       - name: Upload build diagnostics on failure
         if: failure()
@@ -214,6 +221,7 @@ jobs:
           path: |
             dist/
             out/
+            !dist/win-unpacked/**
           if-no-files-found: warn
           retention-days: 7
 

@@ -146,8 +146,14 @@ export function QaChat() {
         ) : ragState.error ? (
           // QA19(C-MED): 빌드 실패 → 키워드 강등을 헤더에서 고지(role="status"). 실패 시 메모리
           // 인덱스는 비워지지만(chunkCount 0) 디스크 인덱스는 보존되어 재오픈 시 복원된다.
-          <span role="status" className="text-xs text-red-500" title={t('qa.indexFailedTooltip')}>
-            {t('qa.indexFailed')}
+          // QA21(D-LOW): 사유별 분기 — 'embedModelChanged' 에 "네트워크 확인" 안내를 띄우면
+          // 원인(모델 설치·삭제)과 무관한 곳으로 사용자를 보낸다.
+          <span
+            role="status"
+            className="text-xs text-red-500"
+            title={ragState.error === 'embedModelChanged' ? t('qa.indexModelChangedTooltip') : t('qa.indexFailedTooltip')}
+          >
+            {ragState.error === 'embedModelChanged' ? t('qa.indexModelChanged') : t('qa.indexFailed')}
           </span>
         ) : ragState.chunkCount > 0 ? (
           <span className="text-xs text-green-500" title={t('qa.chunkTooltip', { model: ragState.model || '?', count: ragState.chunkCount })}>
