@@ -195,7 +195,7 @@ PDF에 포함된 차트, 다이어그램, 표, 사진 등을 Vision AI가 자동
 - 자동 업데이트 — 시작 시 새 버전을 감지해 클릭 한 번으로 설치. 동의 없이 다운로드하지 않으며, 재시작 전에 작업 중이던 내용을 저장합니다
 
 **품질 보증**
-- 단위 테스트 1610건 + Playwright E2E + CI 품질 게이트, 릴리즈마다 4-에이전트 병렬 QA 수행
+- 단위 테스트 1631건 + Playwright E2E + CI 품질 게이트, 릴리즈마다 4-에이전트 병렬 QA 수행
 - 빌드 무결성 — 인스톨러 SHA-256 해시 + Sigstore attestation 자동 게시
 - 상세 개선·수정 이력: [docs/HISTORY.md](docs/HISTORY.md)
 
@@ -243,7 +243,7 @@ PDF에 포함된 차트, 다이어그램, 표, 사진 등을 Vision AI가 자동
 
 | 항목 | 기술 |
 |------|------|
-| 프레임워크 | Electron 42 + React 19 |
+| 프레임워크 | Electron 43 + React 19 |
 | 언어 | TypeScript (strict mode, `noUncheckedIndexedAccess` 등 활성) |
 | AI 생성 | Ollama (로컬) / Claude API / OpenAI API / Gemini API — Main 프로세스 IPC 기반 |
 | AI 임베딩 (RAG) | Ollama /api/embed / OpenAI /v1/embeddings / Gemini batchEmbedContents — 인메모리 벡터 스토어 |
@@ -252,8 +252,8 @@ PDF에 포함된 차트, 다이어그램, 표, 사진 등을 Vision AI가 자동
 | 스타일링 | Tailwind CSS v4 + @tailwindcss/typography |
 | 빌드 | electron-vite + electron-builder (Windows NSIS — macOS DMG는 공증 자격 확보 시까지 일시 중단) |
 | 자동 업데이트 | electron-updater (GitHub Releases 피드) — 시작 시 확인, 다운로드·설치는 사용자 승인 후, 설치 직전 렌더러 flush |
-| 테스트 | Vitest 단위 테스트 1610건/92파일 (renderer·shared 1034 + main 576) + Playwright E2E (CI-결정적 9건) + `tsc --noEmit` 타입 체크 + CI 커버리지 게이트 (81/73/81/84) |
-| 다국어 (i18n) | 자체 구현 (i18n.ts) — 290+ 키, useT() 훅, 템플릿 치환 |
+| 테스트 | Vitest 단위 테스트 1631건/92파일 (renderer·shared 1051 + main 580) + Playwright E2E (CI-결정적 9건) + `tsc --noEmit` 타입 체크 + CI 커버리지 게이트 (81/73/81/84) |
+| 다국어 (i18n) | 자체 구현 (i18n.ts) — 400+ 키, useT() 훅, 템플릿 치환 |
 | API 키 보안 | Electron safeStorage (OS 키체인 암호화), Main 프로세스에서만 복호화 |
 | 공유 상수 | `src/shared/constants.ts` — Main/Renderer 공유 (MAX_PDF_SIZE 등 drift 방지) |
 
@@ -289,21 +289,23 @@ src/
 ├── main/                 # Electron main process
 │   ├── index.ts          # 앱 엔트리, IPC, 설정/API키 관리
 │   ├── ai-service.ts     # AI API 호출 (스트리밍 요약 + Vision 이미지 분석 + OCR)
+│   ├── session-store.ts  # 세션 영속화 (원자적 쓰기·manifest·LRU 정리)
+│   ├── updater.ts        # 자동 업데이트 (확인 / 승인 후 다운로드·설치)
 │   └── ollama-manager.ts # Ollama 설치/시작/모델 관리
 ├── preload/
 │   └── index.ts          # contextBridge API (ai, settings, apiKey, ollama, file)
 └── renderer/             # React UI
     ├── App.tsx            # 루트 컴포넌트, 요약 로직
-    ├── components/        # UI 컴포넌트 (16개)
+    ├── components/        # UI 컴포넌트 (17개)
     ├── lib/
     │   ├── ai-client.ts       # AI Client (IPC를 통해 Main에 요약/Q&A 요청)
     │   ├── pdf-parser.ts      # PDF 텍스트 + 이미지 추출, 챕터 감지, OCR fallback
     │   ├── chunker.ts         # 텍스트 청크 분할 (한글 비율 자동 감지)
-    │   ├── i18n.ts             # 다국어 번역 (290+ 키, t() 함수, useT() 훅)
+    │   ├── i18n.ts             # 다국어 번역 (400+ 키, t() 함수, useT() 훅)
     │   ├── use-qa.ts          # Q&A 채팅 훅 (RAG 시맨틱 검색 + 키워드 fallback, 대화 이력)
     │   ├── vector-store.ts    # 인메모리 벡터 스토어 (코사인 유사도 검색, 차원 검증)
     │   ├── store.ts           # Zustand 상태 관리 (요약 + Q&A + RAG 인덱스)
-    │   └── __tests__/         # 단위 테스트 (1610건, 92 파일)
+    │   └── __tests__/         # 단위 테스트 (1631건, 92 파일)
     └── types/
         └── index.ts       # 타입 정의 + Provider 모델 상수
 ```
@@ -498,10 +500,11 @@ PDF 파일
 
 ## 품질 보증
 
-- **단위 테스트 1610건 / 92파일** — renderer·shared 1034 + main 576. 메인 프로세스는 electron 모킹 하니스로 IPC 핸들러·OllamaManager·API 키 저장소·ai-service·전체 문서 검색까지 행위 테스트, 렌더러/preload 레이어(컴포넌트 16종 전수 + use-summarize/use-session/pdf-parser/safe-markdown 등 핵심 라이브러리 + preload 브리지)는 happy-dom 으로 행위 테스트
+- **단위 테스트 1631건 / 92파일** — renderer·shared 1051 + main 580. 메인 프로세스는 electron 모킹 하니스로 IPC 핸들러·OllamaManager·API 키 저장소·ai-service·전체 문서 검색까지 행위 테스트, 렌더러/preload 레이어(컴포넌트 17종 전수 + use-summarize/use-session/pdf-parser/safe-markdown 등 핵심 라이브러리 + preload 브리지)는 happy-dom 으로 행위 테스트
 - **Playwright E2E** — 실제 Electron 빌드를 구동하는 CI-결정적 테스트 9건(콜드 스타트 위자드·PDF 파싱·세션/설정 재시작 복원·업로드 에러 경로), 전부 AI 비의존, 멀티탭 복원과 요약/Q&A/컬렉션은 로컬-전용 Ollama 스펙으로 커버
-- **CI 게이트** — `tsc --noEmit`(strict, e2e 전용 타입체크 프로젝트 포함), 커버리지 임계(81/73/81/84) 강제, lockfile 버전 동기화 검증, `npm audit` advisory, Node 22/24 매트릭스 + Windows 유닛 테스트 레그
-- **4-에이전트 병렬 QA** — 릴리즈마다 전체 코드베이스 QA 라운드 수행, 50+ 라운드 연속 Critical 0건 (검출된 High/Important 는 릴리즈 전 즉시 수정 — 예: R41 이 v0.19.0 의 세션 손상 High 를 사전 차단; 최근 라운드는 Low~Medium 검출(여전히 Critical 0) — 최근 라운드들은 성능 딥다이브(지연 로딩·PDF 뷰어 메모리 윈도잉·자동저장/IPC 절감)와 안정성·데이터무결성 하드닝(종료 시점 세션 flush 조율·프로바이더 4-way 파리티 포함)을 뒷받침해 v0.31.20 까지 출시)
+- **CI 게이트** — `tsc --noEmit`(strict, e2e 전용 타입체크 프로젝트 포함), 커버리지 임계(81/73/81/84) 강제, lockfile 버전 동기화 검증, 태그 ↔ `package.json` 버전 일치 검증, `npm audit` advisory, Node 22/24 매트릭스 + Windows 유닛 테스트 레그
+- **패키징 앱 게이트(릴리즈 전용)** — 릴리즈 워크플로가 자산을 업로드하기 **전에** 실제 패키징된 바이너리를 띄워, renderer 가 **asar 안의 번들만으로** 기동하고 실제 PDF 를 파싱하는지 검증한다(+asar 크기 상한). 다른 E2E 스펙은 전부 소스 트리의 `out/` 을 실행해 리포지토리의 `node_modules` 가 그대로 보이므로, 패키징 회귀를 구조적으로 잡을 수 없다
+- **4-에이전트 병렬 QA** — 릴리즈마다 전체 코드베이스 QA 라운드 수행, 에이전트별로 다른 축을 담당(최근 변경·동시성·영속화·패키징/CI 등). 50+ 라운드 연속 차단성 0건이며, 지금 라운드가 실제로 발굴하는 것은 **비싸지만 조용한 부류** — 에러 없이 사라지는 데이터, 맞아 보이지만 틀린 답변이다. v0.31.36 에서 고친 두 예: Q&A 가 페이지 라벨 없는 키워드 폴백으로 내려가면서도 "페이지를 인용하라"는 지시를 그대로 받아 **번호를 지어냈고**, 저장 공간 정리가 디스크에만 존재하는 열린 탭의 세션을 삭제할 수 있었다. 라운드는 **이전 수정이 만든 회귀**도 잡는다 — v0.31.35 핫픽스가 v0.31.34 로 출시된 2건을 복구했다
 - 상세 개선·수정 이력: [docs/HISTORY.md](docs/HISTORY.md)
 
 ## 라이선스

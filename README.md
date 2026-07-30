@@ -195,7 +195,7 @@ For image-based/scanned PDFs where text extraction fails, Vision AI recognizes t
 - Self-updating — new versions are detected on startup and installed with one click; downloads never start without consent, and in-progress work is saved before the app restarts
 
 **Quality assurance**
-- 1610 unit tests + Playwright E2E + CI quality gates, plus a 4-agent parallel QA round on every release
+- 1631 unit tests + Playwright E2E + CI quality gates, plus a 4-agent parallel QA round on every release
 - Build integrity — installer SHA-256 hashes + Sigstore attestation published automatically
 - Detailed improvement/fix history: [docs/HISTORY.md](docs/HISTORY.md) (Korean)
 
@@ -243,7 +243,7 @@ For image-based/scanned PDFs where text extraction fails, Vision AI recognizes t
 
 | Area | Technology |
 |------|------------|
-| Framework | Electron 42 + React 19 |
+| Framework | Electron 43 + React 19 |
 | Language | TypeScript (strict mode, incl. `noUncheckedIndexedAccess`) |
 | AI generation | Ollama (local) / Claude API / OpenAI API / Gemini API — via Main-process IPC |
 | AI embeddings (RAG) | Ollama /api/embed / OpenAI /v1/embeddings / Gemini batchEmbedContents — in-memory vector store |
@@ -252,8 +252,8 @@ For image-based/scanned PDFs where text extraction fails, Vision AI recognizes t
 | Styling | Tailwind CSS v4 + @tailwindcss/typography |
 | Build | electron-vite + electron-builder (Windows NSIS — macOS DMG paused until notarization credentials are in place) |
 | Auto-update | electron-updater (GitHub Releases feed) — check on startup, download and install only on user consent, renderer flush before install |
-| Testing | Vitest, 1610 unit tests / 92 files (renderer·shared 1034 + main 576) + Playwright E2E (9 CI-deterministic tests) + `tsc --noEmit` type check + CI coverage gates (81/73/81/84) |
-| i18n | In-house (i18n.ts) — 290+ keys, useT() hook, template substitution |
+| Testing | Vitest, 1631 unit tests / 92 files (renderer·shared 1051 + main 580) + Playwright E2E (9 CI-deterministic tests) + `tsc --noEmit` type check + CI coverage gates (81/73/81/84) |
+| i18n | In-house (i18n.ts) — 400+ keys, useT() hook, template substitution |
 | API key security | Electron safeStorage (OS keychain encryption), decrypted only in the Main process |
 | Shared constants | `src/shared/constants.ts` — shared between Main/Renderer (prevents drift of MAX_PDF_SIZE etc.) |
 
@@ -289,21 +289,23 @@ src/
 ├── main/                 # Electron main process
 │   ├── index.ts          # App entry, IPC, settings/API key management
 │   ├── ai-service.ts     # AI API calls (streaming summary + Vision image analysis + OCR)
+│   ├── session-store.ts  # Session persistence (atomic writes, manifest, LRU cleanup)
+│   ├── updater.ts        # Auto-update (check / download / install on consent)
 │   └── ollama-manager.ts # Ollama install/start/model management
 ├── preload/
 │   └── index.ts          # contextBridge API (ai, settings, apiKey, ollama, file)
 └── renderer/             # React UI
     ├── App.tsx            # Root component, summarization logic
-    ├── components/        # UI components (16)
+    ├── components/        # UI components (17)
     ├── lib/
     │   ├── ai-client.ts       # AI client (requests summaries/Q&A from Main via IPC)
     │   ├── pdf-parser.ts      # PDF text + image extraction, chapter detection, OCR fallback
     │   ├── chunker.ts         # Text chunking (auto-detects Korean ratio)
-    │   ├── i18n.ts             # Translations (290+ keys, t() function, useT() hook)
+    │   ├── i18n.ts             # Translations (400+ keys, t() function, useT() hook)
     │   ├── use-qa.ts          # Q&A chat hook (RAG semantic search + keyword fallback, history)
     │   ├── vector-store.ts    # In-memory vector store (cosine similarity, dimension checks)
     │   ├── store.ts           # Zustand state (summary + Q&A + RAG index)
-    │   └── __tests__/         # Unit tests (1610, 92 files)
+    │   └── __tests__/         # Unit tests (1631, 92 files)
     └── types/
         └── index.ts       # Type definitions + provider model constants
 ```
@@ -498,10 +500,11 @@ The threat model and mitigations currently in place. For the detailed per-versio
 
 ## Quality Assurance
 
-- **1610 unit tests / 92 files** — renderer·shared 1034 + main 576. The main process is behavior-tested through an electron mocking harness covering IPC handlers, OllamaManager, the API key store, ai-service, and cross-session search; the renderer/preload layer (all 16 components + core libraries such as use-summarize/use-session/pdf-parser/safe-markdown and the preload bridge) is behavior-tested via happy-dom
+- **1631 unit tests / 92 files** — renderer·shared 1051 + main 580. The main process is behavior-tested through an electron mocking harness covering IPC handlers, OllamaManager, the API key store, ai-service, and cross-session search; the renderer/preload layer (all 17 components + core libraries such as use-summarize/use-session/pdf-parser/safe-markdown and the preload bridge) is behavior-tested via happy-dom
 - **Playwright E2E** — 9 CI-deterministic tests driving the real Electron build (cold-start wizard, PDF parse, session/settings persistence across restart, upload-error paths), all AI-independent; multi-tab restore and summarize/Q&A/collection flows are covered by local-only Ollama specs
-- **CI gates** — `tsc --noEmit` (strict, incl. a separate e2e type-check project), enforced coverage thresholds (81/73/81/84), lockfile version sync check, `npm audit` advisory, Node 22/24 matrix plus a Windows unit-test leg
-- **4-agent parallel QA** — a full-codebase QA round on every release; zero Critical findings across 50+ consecutive rounds (detected High/Important issues are fixed before release — e.g. R41 caught a High session-corruption path in v0.19.0; recent rounds surface Low-to-Medium items (still zero Critical) — the latest rounds backed a performance deep-dive (lazy loading, PDF-viewer memory windowing, autosave/IPC reduction) and reliability/data-integrity hardening — including quit-time session-flush coordination and 4-way provider parity — shipped through v0.31.20)
+- **CI gates** — `tsc --noEmit` (strict, incl. a separate e2e type-check project), enforced coverage thresholds (81/73/81/84), lockfile version sync check, tag ↔ `package.json` version match, `npm audit` advisory, Node 22/24 matrix plus a Windows unit-test leg
+- **Packaged-app gate (release only)** — the release workflow launches the actual packaged binary before uploading any asset, and verifies that the renderer boots and parses a real PDF **from inside the asar alone**, plus an asar size ceiling. Every other E2E spec runs the source tree's `out/`, where the repo's `node_modules` is still visible — so none of them can catch a packaging regression
+- **4-agent parallel QA** — a full-codebase QA round on every release, each agent taking a different axis (recent code, concurrency, persistence, packaging/CI, …). Zero blocking findings for 50+ consecutive rounds; what the rounds actually surface now is the expensive-but-quiet class — data that disappears without an error, and answers that look correct but aren't. Two examples fixed in v0.31.36: Q&A fell back to keyword search without page labels while still being told to cite pages (so it invented them), and storage cleanup could delete an open tab's session, which lives only on disk. The rounds also catch regressions introduced by earlier fixes — the v0.31.35 hotfix repaired two shipped in v0.31.34
 - Detailed improvement/fix history: [docs/HISTORY.md](docs/HISTORY.md) (Korean)
 
 ## License
