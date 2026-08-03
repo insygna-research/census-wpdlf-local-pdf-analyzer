@@ -13,7 +13,7 @@ import { createUpdaterService, type UpdaterService } from './updater';
 import { AUTO_CHECK_STARTUP_DELAY_MS } from './update-policy';
 import type { UpdateState } from '../shared/update-types';
 import { generate, abortGenerate, abortAllRequests, checkAvailability, analyzeImage, analyzeImageForOcr, generateEmbeddings, checkEmbeddingAvailability, cleanupAiService, registerEmbedRequest, unregisterEmbedRequest, GEMINI_EMBED_MODEL } from './ai-service';
-import { MAX_PDF_SIZE_BYTES, isLocalhostHost } from '../shared/constants';
+import { MAX_PDF_SIZE_BYTES, isLocalhostHost, isValidOllamaUrl } from '../shared/constants';
 // v0.18.19 patch R34 P2: settings 키 단일 출처. 이전엔 본 파일 두 곳에 별도 리터럴이 있었고
 // R33 Surface 4 P3 가 drift 가드 부재를 지적. settings-keys.ts 가 양쪽을 derive 함.
 import { VALID_SETTINGS_KEYS, VALID_SETTINGS_KEYS_SET } from './settings-keys';
@@ -626,14 +626,9 @@ export function registerIpcHandlers(): void {
             if (typeof val === 'string' && val.length > 0 && val.length <= 100) filtered[key] = val;
             break;
           case 'ollamaBaseUrl':
-            if (typeof val === 'string') {
-              try {
-                const parsed = new URL(val);
-                if ((parsed.protocol === 'http:' || parsed.protocol === 'https:') && isLocalhostHost(parsed.hostname)) {
-                  filtered[key] = val;
-                }
-              } catch { /* 유효하지 않은 URL 무시 */ }
-            }
+            // QA22(C-MED): 판정을 shared 의 isValidOllamaUrl 로 단일화 — 렌더러 UI 가 같은 함수로
+            // 저장 전에 차단하므로 규칙이 갈라지면 "UI 통과 → main 무음 드롭" 이 재현된다.
+            if (isValidOllamaUrl(val)) filtered[key] = val as string;
             break;
           case 'theme':
             if (VALID_THEMES.includes(val as typeof VALID_THEMES[number])) filtered[key] = val;

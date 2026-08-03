@@ -198,12 +198,20 @@ describe('PDF Parser - MAX_TOTAL_IMAGES cap enforcement', () => {
         this.data = data; this.width = width; this.height = height;
       }
     }
+    // QA22(B-MED): 각 변환이 **서로 다른 바이트**를 내도록 한다. 이전엔 모든 이미지가 동일한
+    // 8바이트 버퍼 → 동일 base64 였는데, 문서 내 중복 이미지 제거가 도입되면서 그 픽스처는
+    // "같은 이미지 50장"을 의미하게 되어 캡(50) 검증이 성립하지 않는다. 캡 테스트의 의도는
+    // "서로 다른 이미지가 많을 때 정확히 50장에서 멈추는가" 이므로 픽스처를 그 의도에 맞춘다.
+    let blobSeq = 0;
     class FakeOffscreenCanvas {
       width: number;
       height: number;
       constructor(w: number, h: number) { this.width = w; this.height = h; }
       getContext() { return { putImageData() {}, drawImage() {} }; }
-      async convertToBlob() { return { async arrayBuffer() { return new ArrayBuffer(8); } }; }
+      async convertToBlob() {
+        const n = blobSeq++;
+        return { async arrayBuffer() { return new Uint8Array([n & 0xff, (n >> 8) & 0xff, 1, 2, 3, 4, 5, 6]).buffer; } };
+      }
     }
 
     const g = globalThis as unknown as Record<string, unknown>;
@@ -241,6 +249,68 @@ describe('PDF Parser - MAX_TOTAL_IMAGES cap enforcement', () => {
 
       // 추출이 실제로 일어났고(>0) 캡이 정확히 작동했음(===50)을 동시 검증.
       expect(doc.images.length).toBe(50);
+    } finally {
+      g.OffscreenCanvas = origOC;
+      g.ImageData = origID;
+    }
+  });
+
+  // QA22(B-MED): **배선 검증** — 문서 내 중복 이미지가 실제로 걸러지는가.
+  // imageSignature 순수 함수 테스트만으로는 이 결함을 못 잡는다(그 함수가 추출 루프에
+  // 연결돼 있는지는 별개). 강의자료의 대표 패턴(모든 슬라이드에 같은 로고)을 재현한다:
+  // 이전에는 반복 로고가 앞 5~10페이지에서 50장 예산을 통째로 먹어, 뒷부분의 실제 차트가
+  // 한 장도 Vision 에 가지 않았고 클라우드면 로고 50장 분석 비용까지 냈다.
+  it('모든 페이지에 같은 이미지가 반복되면 1장만 담는다 (Vision 예산 선점 방지)', async () => {
+    const PAGES = 10;
+    const OPS_PER_PAGE = 100;
+    const W = 64;
+    const H = 64;
+    const fakeImage = { width: W, height: H, data: new Uint8ClampedArray(W * H * 4).fill(200) };
+
+    class FakeImageData {
+      data: Uint8ClampedArray; width: number; height: number;
+      constructor(data: Uint8ClampedArray, width: number, height: number) {
+        this.data = data; this.width = width; this.height = height;
+      }
+    }
+    // 모든 변환이 **동일한 바이트**를 낸다 = 문서 전체에 같은 로고가 반복되는 상황.
+    class FakeOffscreenCanvas {
+      width: number; height: number;
+      constructor(w: number, h: number) { this.width = w; this.height = h; }
+      getContext() { return { putImageData() {}, drawImage() {} }; }
+      async convertToBlob() { return { async arrayBuffer() { return new ArrayBuffer(8); } }; }
+    }
+
+    const g = globalThis as unknown as Record<string, unknown>;
+    const origOC = g.OffscreenCanvas;
+    const origID = g.ImageData;
+    g.OffscreenCanvas = FakeOffscreenCanvas;
+    g.ImageData = FakeImageData;
+
+    try {
+      const mockPage = {
+        getTextContent: vi.fn().mockResolvedValue({
+          items: [{ str: '프로세스는 실행 중인 프로그램의 인스턴스이다. 운영체제는 프로세스를 관리한다.' }],
+        }),
+        getOperatorList: vi.fn().mockResolvedValue({
+          fnArray: new Array(OPS_PER_PAGE).fill(85),
+          argsArray: new Array(OPS_PER_PAGE).fill(['img1']),
+        }),
+        objs: { get: vi.fn((_id: string, cb: (obj: unknown) => void) => cb(fakeImage)) },
+        commonObjs: { get: vi.fn() },
+        cleanup: vi.fn(),
+      };
+      const mockPdf = {
+        numPages: PAGES,
+        getPage: vi.fn().mockResolvedValue(mockPage),
+        destroy: vi.fn().mockResolvedValue(undefined),
+      };
+      (pdfjsLib.getDocument as ReturnType<typeof vi.fn>).mockReturnValue({ promise: Promise.resolve(mockPdf) });
+
+      const { parsePdf } = await import('../pdf-parser');
+      const doc = await parsePdf(new ArrayBuffer(10), 'slides.pdf', '/slides.pdf');
+
+      expect(doc.images.length, '동일 이미지 반복은 1장으로 접혀야 한다(예산 선점 방지)').toBe(1);
     } finally {
       g.OffscreenCanvas = origOC;
       g.ImageData = origID;

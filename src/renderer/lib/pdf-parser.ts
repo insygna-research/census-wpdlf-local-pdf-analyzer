@@ -76,6 +76,39 @@ function generateOcrRequestId(): string {
   return `ocr-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
+/**
+ * 이미지의 문서 내 동일성 판정 키(순수). 같은 로고가 매 페이지에 반복되는 경우를 걸러내
+ * Vision 예산(MAX_TOTAL_IMAGES)이 앞 페이지에서 소진되는 것을 막는다.
+ *
+ * base64 전체를 해시하면 수 MB × 50장을 다시 훑어야 하므로, **크기 + base64 의 앞·뒤 표본**으로
+ * 시그니처를 만든다. PNG/JPEG 는 헤더·팔레트가 앞쪽에, 픽셀 데이터 끝이 뒤쪽에 오므로 같은
+ * 이미지끼리는 일치하고 다른 이미지끼리 충돌할 확률은 실질적으로 무시할 수 있다.
+ * (충돌해도 결과는 "이미지 한 장을 분석에서 제외" 이지 오답이 아니다.)
+ */
+export function imageSignature(img: Pick<PageImage, 'base64' | 'width' | 'height' | 'mimeType'>): string {
+  const b = img.base64;
+  const head = b.slice(0, 64);
+  const tail = b.length > 128 ? b.slice(-64) : '';
+  return `${img.mimeType}|${img.width}x${img.height}|${b.length}|${head}|${tail}`;
+}
+
+/**
+ * 비어 있는(텍스트 미추출) 페이지가 유의미하게 많으면 1회 통지. 무음 손실을 표면화하는 용도라
+ * 임계를 낮게 두되, 표지·간지 몇 장이 비어 있는 정상 문서에서 과알림이 되지 않도록 비율을 본다.
+ */
+function notifyEmptyPages(pageTexts: string[], key: 'pdf.emptyPagesNotice' | 'pdf.ocrPartialFailNotice'): void {
+  const total = pageTexts.length;
+  if (total === 0) return;
+  const empty = pageTexts.filter((p) => !p || p.replace(/\s+/g, '').length === 0).length;
+  // 10% 초과이면서 2장 이상 — 한두 장의 표지/간지는 정상이므로 제외.
+  if (empty < 2 || empty / total <= 0.1) return;
+  try {
+    useAppStore.getState().setNotice({
+      message: t(key, { count: String(empty), total: String(total) }),
+    });
+  } catch { /* 테스트/비-store 환경 — best-effort */ }
+}
+
 export async function parsePdf(
   data: ArrayBuffer,
   fileName: string,
@@ -134,6 +167,8 @@ export async function parsePdf(
   const MAX_TOTAL_IMAGES = 50;
   const pages: string[] = new Array(pageCount).fill('');
   const allImages: PageImage[] = [];
+  // QA22(B-MED): 이미 담은 이미지의 시그니처 — 문서 내 반복 이미지(로고·머리말 장식) 제외용.
+  const seenImageSignatures = new Set<string>();
 
   try {
     for (let batchStart = 0; batchStart < pageCount; batchStart += BATCH_SIZE) {
@@ -203,7 +238,19 @@ export async function parsePdf(
             // 슬롯을 초과하지 않도록 잘라낸 후 추가 (이미지 1장당 base64 수 MB → OOM 방지)
             const remainingSlots = MAX_TOTAL_IMAGES - allImages.length;
             if (remainingSlots > 0 && pageImages.length > 0) {
-              allImages.push(...pageImages.slice(0, remainingSlots));
+              // QA22(B-MED): **문서 내 중복 이미지 제거.** 이 앱의 대표 입력인 강의자료는 모든
+              // 슬라이드 상단에 같은 로고가 박혀 있는 경우가 흔한데, 배치가 페이지 오름차순으로
+              // 돌며 선착순으로 슬롯을 먹으므로 앞 5~10페이지의 로고 반복만으로 50장 예산이
+              // 소진됐다 — 뒷부분의 실제 차트·수식·다이어그램이 **한 장도** Vision 에 가지 않고,
+              // 클라우드면 로고 50장 분석 비용까지 낸다. imagesSkipped 마커는 "설정 OFF" 전용이라
+              // 안내도 뜨지 않았다.
+              const fresh = pageImages.filter((img) => {
+                const sig = imageSignature(img);
+                if (seenImageSignatures.has(sig)) return false;
+                seenImageSignatures.add(sig);
+                return true;
+              });
+              if (fresh.length > 0) allImages.push(...fresh.slice(0, remainingSlots));
             }
 
             // 페이지 내부 리소스 해제 — 대용량 PDF에서 누적 메모리 상승 방지
@@ -239,6 +286,12 @@ export async function parsePdf(
           code: 'OCR_FAIL',
         });
       }
+      // QA22(B-MED): **부분 실패 고지.** per-page catch 와 배치 실패가 실패 페이지를 전부 빈
+      // 문자열로 수렴시키는데(인덱스 정렬 목적이라 정당) 위 게이트는 **전체 합계**뿐이다. 그래서
+      // 200페이지 중 150이 429/타임아웃으로 실패해도 50페이지만 살아남으면 총합이 임계를 넘어
+      // **정상 완료 UI**(OCR 배지)로 끝났다 — 요약·인용·RAG 가 150페이지를 통째로 누락하는데
+      // 어떤 표시도 없었다.
+      notifyEmptyPages(ocrPages, 'pdf.ocrPartialFailNotice');
       const chapters = detectChapters(ocrPages);
       return {
         id: crypto.randomUUID(),
@@ -257,6 +310,13 @@ export async function parsePdf(
         isOcr: true,
       };
     }
+
+    // QA22(B-MED): **텍스트 미추출 페이지 고지.** OCR 진입 판정이 문서 전체 합계 임계라, 표지
+    // 한 장만 텍스트 레이어를 가진 300페이지 스캔본은 임계를 통과해 OCR 이 돌지 않고 나머지가
+    // 빈 채로 남는다 — 요약은 표지만 보고 만들어지고 인용은 빈 페이지를 가리키며 RAG 는 사실상
+    // 비어 있는데, 에러도 배지도 없다. 자동 OCR 승격은 오검출 시 실제 과금(클라우드 OCR)이라
+    // 보류하고 무음만 없앤다 — 판단은 사용자에게 넘긴다.
+    notifyEmptyPages(pages, 'pdf.emptyPagesNotice');
 
     const chapters = detectChapters(pages);
 
@@ -415,7 +475,18 @@ async function ocrFallback(
   return pages;
 }
 
-function detectChapters(pages: string[]): Chapter[] {
+/**
+ * 챕터 헤딩에서 비교 가능한 정체성을 뽑는다(순수 — 러닝 헤더 판정용).
+ * - `key`: 공백·구두점을 정규화한 제목. 직전 챕터와 같으면 **같은 챕터의 러닝 헤더**로 본다.
+ * - `num`: 챕터 번호(있으면). 증가하지 않으면 새 챕터로 승격하지 않는다.
+ */
+export function parseChapterHeading(firstLine: string): { key: string; num: number | null } {
+  const key = firstLine.replace(/\s+/g, ' ').replace(/[.·:;,\-–—]+$/, '').trim().toLowerCase();
+  const m = firstLine.match(/(\d+)/);
+  return { key, num: m?.[1] !== undefined ? Number.parseInt(m[1], 10) : null };
+}
+
+export function detectChapters(pages: string[]): Chapter[] {
   const chapters: Chapter[] = [];
   // 헤딩 패턴: "제1장", "Chapter 1", "1장" (명시적 챕터 마커만 매칭)
   // "1. " 패턴 제거 — 본문 번호 목록 오탐 방지
@@ -424,14 +495,31 @@ function detectChapters(pages: string[]): Chapter[] {
   let currentChapter: Chapter | null = null;
   let chapterIndex = 0;
   let preChapterText = '';
+  // QA22(B-MED): 직전에 승격한 헤딩의 정체성. **러닝 헤더 오인 차단**용.
+  let lastHeading: { key: string; num: number | null } | null = null;
 
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i];
     if (page === undefined) continue;
     const firstLine = page.trim().split('\n')[0] || '';
-    const match = firstLine.match(headingPattern);
+    let match = firstLine.match(headingPattern);
+
+    // QA22(B-MED): 페이지의 **첫 시각 줄**만 보고 챕터를 승격하면, 국문 교재·학위논문에 흔한
+    // 러닝 헤더("제3장 프로세스 관리" 가 모든 페이지 상단에 인쇄)가 매 페이지를 새 챕터로
+    // 만든다 — 300페이지 = 300챕터. summarizeByChapter 는 챕터당 최소 1회 LLM 을 호출하므로
+    // ~30회여야 할 요약이 **300회**가 되고(로컬은 시간, 클라우드는 비용) 본문은 동일 제목
+    // 300개로 도배된다. 직전 헤딩과 **제목이 같거나 번호가 진행하지 않으면** 승격하지 않고
+    // 본문으로 흡수한다(같은 챕터가 여러 페이지에 걸치는 정상 상태).
+    if (match && lastHeading) {
+      const h = parseChapterHeading(firstLine);
+      const sameTitle = h.key === lastHeading.key;
+      // 번호가 있는데 이전 이하로 되돌아가면(같은 번호 반복 포함) 새 챕터가 아니다.
+      const notAdvancing = h.num !== null && lastHeading.num !== null && h.num <= lastHeading.num;
+      if (sameTitle || notAdvancing) match = null;
+    }
 
     if (match) {
+      lastHeading = parseChapterHeading(firstLine);
       if (currentChapter) {
         currentChapter.endPage = i;
         chapters.push(currentChapter);
@@ -470,7 +558,7 @@ function detectChapters(pages: string[]): Chapter[] {
       const end = Math.min(i + chunkSize, pages.length);
       chapters.push({
         index: Math.floor(i / chunkSize) + 1,
-        title: `${i + 1}~${end} 페이지`,
+        title: t('pdf.pageRangeChapter', { start: String(i + 1), end: String(end) }),
         startPage: i + 1,
         endPage: end,
         text: pages.slice(i, end).join('\n\n'),

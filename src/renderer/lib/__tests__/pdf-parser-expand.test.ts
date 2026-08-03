@@ -13,7 +13,7 @@ vi.mock('pdfjs-dist/build/pdf.worker.min.mjs?url', () => ({ default: 'mock-worke
 vi.mock('pdfjs-dist', () => ({ GlobalWorkerOptions: {}, getDocument: vi.fn(), OPS: { paintImageXObject: 85 } }));
 vi.mock('../use-session', () => ({ restoreSessionForDocument: vi.fn(), persistCurrentSession: vi.fn() }));
 
-import { expandToRgba } from '../pdf-parser';
+import { expandToRgba, detectChapters, imageSignature } from '../pdf-parser';
 
 describe('expandToRgba — 포맷 추정 + RGBA 확장', () => {
   it('RGBA(px*4): 그대로 복사', () => {
@@ -77,5 +77,81 @@ describe('expandToRgba — 포맷 추정 + RGBA 확장', () => {
     const out = expandToRgba(1, 1, data);
     expect(out).toBeInstanceOf(Uint8ClampedArray);
     expect(Array.from(out!)).toEqual([255, 255, 255, 255]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QA22(B-MED): 챕터 감지 — 러닝 헤더 오인 차단
+//
+// 국문 교재·학위논문은 "제3장 프로세스 관리" 같은 러닝 헤더를 **모든 페이지 상단**에 인쇄한다.
+// 페이지의 첫 시각 줄만 보고 챕터를 승격하면 N페이지 = N챕터가 되고, summarizeByChapter 는
+// 챕터당 최소 1회 LLM 을 호출하므로 300페이지 문서에서 ~30회여야 할 요약이 300회가 된다
+// (로컬은 시간, 클라우드는 비용). 본문도 동일 제목 300개로 도배된다.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('detectChapters — 러닝 헤더 (QA22)', () => {
+  it('같은 제목이 매 페이지 상단에 반복되면 하나의 챕터로 흡수한다', () => {
+    const pages = Array.from({ length: 12 }, (_, i) => `제3장 프로세스 관리\n${i + 1}쪽 본문 내용입니다.`);
+    const chapters = detectChapters(pages);
+
+    expect(chapters, 'N페이지 = N챕터가 되면 안 된다').toHaveLength(1);
+    expect(chapters[0]!.startPage).toBe(1);
+    expect(chapters[0]!.endPage).toBe(12);
+    // 흡수된 페이지 본문이 유실되지 않아야 한다(요약 입력이 줄어들면 안 됨)
+    expect(chapters[0]!.text).toContain('1쪽 본문');
+    expect(chapters[0]!.text).toContain('12쪽 본문');
+  });
+
+  it('번호가 실제로 진행하면 정상적으로 새 챕터를 만든다 (오탐 방지)', () => {
+    const pages = [
+      '제1장 서론\n서론 본문',
+      '제1장 서론\n서론 이어짐',      // 러닝 헤더
+      '제2장 본론\n본론 본문',
+      '제2장 본론\n본론 이어짐',      // 러닝 헤더
+      '제3장 결론\n결론 본문',
+    ];
+    const chapters = detectChapters(pages);
+
+    expect(chapters).toHaveLength(3);
+    expect(chapters.map((c) => c.startPage)).toEqual([1, 3, 5]);
+    expect(chapters[1]!.title).toContain('본론');
+  });
+
+  it('번호가 되돌아가면 새 챕터로 승격하지 않는다 (헤더/푸터 혼재 방어)', () => {
+    const pages = [
+      '제5장 심화\n심화 본문',
+      '제2장 기초\n앞 장 참조 표기가 상단에 남은 페이지', // 번호 후퇴 → 승격 금지
+      '제6장 마무리\n마무리 본문',
+    ];
+    const chapters = detectChapters(pages);
+
+    expect(chapters.map((c) => c.startPage)).toEqual([1, 3]);
+  });
+
+  it('영문 Chapter 러닝 헤더도 동일하게 흡수', () => {
+    const pages = Array.from({ length: 6 }, (_, i) => `Chapter 2 Memory\npage ${i + 1} body text`);
+    expect(detectChapters(pages)).toHaveLength(1);
+  });
+});
+
+// QA22(B-MED): 문서 내 중복 이미지 제거 — 강의자료의 반복 로고가 Vision 예산을 선점하던 결함.
+describe('imageSignature — 중복 이미지 판정 (QA22)', () => {
+  const img = (base64: string, w = 100, h = 100) => ({ base64, width: w, height: h, mimeType: 'image/png' as const });
+
+  it('같은 바이트·같은 크기면 동일 시그니처 (반복 로고)', () => {
+    expect(imageSignature(img('AAAABBBBCCCC'))).toBe(imageSignature(img('AAAABBBBCCCC')));
+  });
+
+  it('내용이 다르면 다른 시그니처', () => {
+    expect(imageSignature(img('AAAABBBBCCCC'))).not.toBe(imageSignature(img('ZZZZYYYYXXXX')));
+  });
+
+  it('크기가 다르면 다른 시그니처 (같은 로고의 다른 해상도는 별개 이미지)', () => {
+    expect(imageSignature(img('AAAA', 100, 100))).not.toBe(imageSignature(img('AAAA', 200, 200)));
+  });
+
+  it('긴 base64 는 앞·뒤 표본으로 구분한다 (중간만 다른 경우도 길이로 분리)', () => {
+    const a = 'H'.repeat(64) + 'A'.repeat(500) + 'T'.repeat(64);
+    const b = 'H'.repeat(64) + 'B'.repeat(400) + 'T'.repeat(64); // 길이가 달라 구분
+    expect(imageSignature(img(a))).not.toBe(imageSignature(img(b)));
   });
 });

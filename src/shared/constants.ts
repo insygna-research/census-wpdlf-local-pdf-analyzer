@@ -47,3 +47,21 @@ export function isLocalhostHost(hostname: string): boolean {
   }
   return LOCALHOST_HOSTS.includes(hostname);
 }
+
+/**
+ * Ollama base URL 유효성 — **main 의 settings:set 검증과 동일 규칙**(http/https + localhost 호스트).
+ *
+ * QA22(C-MED): 이 규칙이 main 에만 있어 렌더러 UI 는 무엇이든 받아들였고, main 은 거부를
+ * **조용히 드롭**(filtered 에 미포함, 에러 미반환)했다. 그 결과 store(거부된 값)와 settings.json
+ * (구값)이 분기해, ai:generate 는 매 호출 실패하는데 ai:check-available 은 "연결됨" 을 표시하는
+ * 모순 상태가 됐다. shared 로 올려 양쪽이 같은 판정을 쓰게 한다(drift 차단).
+ */
+export function isValidOllamaUrl(value: unknown): boolean {
+  if (typeof value !== 'string' || value.trim().length === 0) return false;
+  try {
+    const parsed = new URL(value);
+    return (parsed.protocol === 'http:' || parsed.protocol === 'https:') && isLocalhostHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+}

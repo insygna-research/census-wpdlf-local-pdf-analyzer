@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { isValidOllamaUrl } from '../../shared/constants';
 import { useAppStore } from '../lib/store';
 import { useT, translateMainProgress, translateMainError } from '../lib/i18n';
 import type { MainProgressEvent } from '../lib/i18n';
@@ -75,6 +76,9 @@ export function SettingsPanel() {
   // onChange 에서 즉시 거부하면 "2000" 타이핑 중 "2" 가 거부되어 입력 불가. blur 시 clamp + 커밋.
   const [chunkSizeInput, setChunkSizeInput] = useState(String(draft.maxChunkSize));
   const [chunkSizeError, setChunkSizeError] = useState(false);
+  // QA22(C-MED): main settings:set 과 **같은 규칙**(http/https + localhost 호스트). 두 곳이
+  // 어긋나면 UI 는 통과시키고 main 이 조용히 드롭하는 원래 결함이 재현되므로 규칙을 공유한다.
+  const urlInvalid = draft.ollamaBaseUrl.trim().length > 0 && !isValidOllamaUrl(draft.ollamaBaseUrl);
   // session-persistence(module-4): 저장 용량/위치 표시 + 전체 비우기.
   const [sessionStats, setSessionStats] = useState<{ count: number; totalBytes: number; dir: string } | null>(null);
   const refreshSessionStats = async () => {
@@ -349,6 +353,18 @@ export function SettingsPanel() {
     });
     if (hasIncompleteTemplate) {
       setKeyMessage(t('settings.templateIncomplete'));
+      return;
+    }
+    // QA22(C-MED): Ollama URL 은 main 의 settings:set 이 **조용히 드롭**한다(비-localhost/파싱
+    // 실패 시 filtered 에 담지 않고 에러도 반환하지 않음). 그런데 렌더러 updateSettings 는 store 를
+    // 낙관적으로 먼저 갱신하고 IPC 반환값을 버리므로, store 엔 거부된 값이 / settings.json 엔 구값이
+    // 남아 **분기**한다. 그 뒤 ai:generate 는 렌더러가 실어 보낸 URL 을 검증해 매 호출 실패하는데
+    // (미번역 내부 문자열 `Invalid ollamaBaseUrl: localhost only` 노출) ai:check-available 은
+    // settings.json 의 정규 URL 을 쓰므로 StatusBar 는 "연결됨" 을 표시한다 — 두 경로가 서로 다른
+    // 진실을 본다. 스킴 누락 오타(`localhost:11434`)로 평범하게 도달한다.
+    // → 저장 전 차단(불완전 템플릿과 동일 정책). 로컬 전용 제약은 SSRF 방어라 유지한다.
+    if (!isValidOllamaUrl(draft.ollamaBaseUrl)) {
+      setKeyMessage(t('settings.invalidOllamaUrl'));
       return;
     }
     updateSettings(draft);
@@ -742,7 +758,20 @@ export function SettingsPanel() {
           </div>
           <div className="mt-3">
             <label htmlFor="settings-ollama-url" className="block text-sm text-gray-600 dark:text-gray-400 mb-1">Ollama URL</label>
-            <input id="settings-ollama-url" type="text" value={draft.ollamaBaseUrl} onChange={(e) => updateDraft({ ollamaBaseUrl: e.target.value })} className="w-full px-3 py-1.5 text-sm border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white" />
+            <input
+              id="settings-ollama-url"
+              type="text"
+              value={draft.ollamaBaseUrl}
+              onChange={(e) => updateDraft({ ollamaBaseUrl: e.target.value })}
+              aria-invalid={urlInvalid}
+              aria-describedby={urlInvalid ? 'settings-ollama-url-error' : undefined}
+              className={`w-full px-3 py-1.5 text-sm border rounded dark:bg-gray-700 dark:border-gray-600 dark:text-white ${urlInvalid ? 'border-red-500' : ''}`}
+            />
+            {urlInvalid && (
+              <p id="settings-ollama-url-error" role="alert" className="mt-1 text-xs text-red-500">
+                {t('settings.invalidOllamaUrl')}
+              </p>
+            )}
           </div>
         </section>
         </fieldset>

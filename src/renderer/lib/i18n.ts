@@ -107,6 +107,29 @@ export const _translations = {
   'pdf.busyCollectionOpen': { ko: '컬렉션을 여는 중에는 새 파일을 열 수 없습니다.', en: 'Cannot open a new file while opening a collection.' },
   'pdf.invalidFile': { ko: '유효한 PDF 파일이 아닙니다.', en: 'Not a valid PDF file.' },
   'pdf.encrypted': { ko: '암호로 보호된 PDF입니다. 암호를 해제한 후 다시 시도해주세요.', en: 'This PDF is password-protected. Please remove the password and try again.' },
+  // QA22(B-LOW): 챕터 감지 실패 시 페이지 분할 제목. 한국어 하드코딩이라 영어 UI 에서도
+  // 요약 헤딩(`## 1~10 페이지`)과 진행률에 그대로 노출됐다.
+  'pdf.pageRangeChapter': { ko: '{start}~{end} 페이지', en: 'Pages {start}–{end}' },
+  // QA22(B-MED): 텍스트를 추출하지 못한 페이지 고지. OCR 진입 판정이 **문서 전체 합계**라,
+  // 표지 한 장만 텍스트 레이어를 가진 스캔본은 임계를 통과해 OCR 이 아예 돌지 않고 나머지
+  // 페이지가 빈 채로 요약·인용·RAG 에 들어간다 — 에러도 배지도 없이. 자동 OCR 승격은
+  // 오검출 시 실제 과금(클라우드 OCR)이라 보류하고, 우선 **무음을 없앤다**.
+  'pdf.emptyPagesNotice': {
+    ko: '{count}/{total} 페이지에서 텍스트를 추출하지 못했습니다. 스캔 PDF 라면 설정에서 OCR 을 켜고 다시 열어보세요 — 요약·인용·검색이 그 페이지들을 보지 못합니다.',
+    en: 'No text could be extracted from {count} of {total} pages. If this is a scanned PDF, enable OCR in Settings and reopen it — summaries, citations, and search cannot see those pages.',
+  },
+  // QA22(B-MED): OCR 부분 실패 고지. per-page 실패가 전부 빈 문자열로 수렴하는데 상위 게이트는
+  // 전체 합계뿐이라, 200페이지 중 150이 429/타임아웃으로 실패해도 정상 완료 UI 로 끝났다.
+  'pdf.ocrPartialFailNotice': {
+    ko: 'OCR 이 {count}/{total} 페이지에서 실패했습니다. 그 페이지들은 요약·인용·검색에 포함되지 않습니다 — 잠시 후 다시 열면 재시도합니다.',
+    en: 'OCR failed on {count} of {total} pages. Those pages are excluded from summaries, citations, and search — reopen the document later to retry.',
+  },
+  // QA22(B-MED): Vision 이미지 예산 소진 고지. 슬라이드마다 반복되는 로고가 앞 페이지에서
+  // 50장 예산을 선점하면 뒷부분의 실제 차트·수식이 한 장도 분석되지 않는다.
+  'pdf.imageBudgetNotice': {
+    ko: '이미지가 많아 앞부분 {max}장만 분석 대상으로 담았습니다. 문서 뒷부분의 그림·차트는 분석에 포함되지 않을 수 있습니다.',
+    en: 'This document has many images; only the first {max} were captured for analysis. Figures later in the document may not be included.',
+  },
   'uploader.tooManyPages': { ko: '페이지 수가 너무 많습니다 ({pages}p). 최대 {max}페이지까지 지원합니다. 문서를 분할해주세요.', en: 'Too many pages ({pages}p). Maximum {max} pages supported. Please split the document.' },
   // QA7(D-MED): 파싱 에러 3종 i18n 이행 — tooManyPages 와 동일 패턴(영어 UI 한국어 노출 해소)
   'uploader.emptyPdf': { ko: 'PDF에 페이지가 없습니다.', en: 'The PDF has no pages.' },
@@ -331,6 +354,12 @@ export const _translations = {
   'settings.templateStrategySingle': { ko: '단일 패스 (빠름 · 긴 문서 일부 생략)', en: 'Single pass (fast; long docs partly skipped)' },
   'settings.templateStrategyChunked': { ko: '청크+통합 (긴 문서 전체 커버 · 느림)', en: 'Chunk & integrate (covers long docs; slower)' },
   'settings.templateIncomplete': { ko: '템플릿의 이름과 프롬프트를 모두 입력하세요. (한쪽만 채운 항목은 저장되지 않습니다)', en: 'Enter both a name and a prompt for each template. (Entries with only one filled are not saved.)' },
+  // QA22(C-MED): 이전에는 이 값이 거부돼도 저장이 "성공" 으로 보이고, 이후 모든 생성이 미번역
+  // 내부 문자열과 함께 실패하는데 StatusBar 는 "연결됨" 을 표시했다(두 경로가 다른 값을 봄).
+  'settings.invalidOllamaUrl': {
+    ko: 'Ollama URL 형식이 올바르지 않습니다. `http://localhost:11434` 처럼 스킴(http://)을 포함한 로컬 주소여야 합니다.',
+    en: 'Invalid Ollama URL. It must be a local address including the scheme, e.g. http://localhost:11434',
+  },
   'settings.imageAnalysis': { ko: '이미지 분석', en: 'Image Analysis' },
   'settings.imageAnalysisLabel': { ko: 'PDF 이미지 자동 분석', en: 'Auto-analyze PDF images' },
   'settings.imageAnalysisDesc': { ko: 'Vision 지원 모델 필요 (llava, Claude, GPT-4o, Gemini 등)', en: 'Requires Vision model (llava, Claude, GPT-4o, Gemini, etc.)' },
