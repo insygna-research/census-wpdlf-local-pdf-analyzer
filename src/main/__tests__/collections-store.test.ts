@@ -142,3 +142,52 @@ describe('deleteCollection', () => {
     expect(await deleteCollection(FILE, '')).toEqual({ ok: false });
   });
 });
+
+// QA22(C-MED, 데이터손실): QA21 이 세션 manifest 에 대해 고친 "부재 ≠ 일시 I/O 오류" 원칙이
+// **형제 스토어인 collections-store 에는 이식되지 않았다**. 흡수형 loadFile 이 RMW 의 read 쪽에
+// 쓰이면 EBUSY 한 번에 저장된 컬렉션이 전량 소실되고, 세션과 달리 **회수 경로가 없다**
+// (collections.json 이 유일한 사본 — 부팅 reconcile 같은 것이 없다).
+describe('일시 I/O 오류 시 디스크 보존 (QA22)', () => {
+  const ebusy = () => { const e = new Error('EBUSY') as NodeJS.ErrnoException; e.code = 'EBUSY'; return e; };
+
+  it('저장 중 읽기가 EBUSY 면 기존 컬렉션을 덮어쓰지 않고 실패한다', async () => {
+    await saveCollection(FILE, { name: 'keep-1', docHashes: [H('a')] }, T0);
+    await saveCollection(FILE, { name: 'keep-2', docHashes: [H('b')] }, T0);
+    const before = readFile();
+
+    const fsp = (await import('fs/promises')).default;
+    (fsp.readFile as ReturnType<typeof vi.fn>).mockRejectedValueOnce(ebusy());
+    const r = await saveCollection(FILE, { name: 'new', docHashes: [H('c')] }, T0);
+
+    expect(r.ok, '일시 오류는 실패로 귀결돼야 한다(무음 성공 금지)').toBe(false);
+    expect(readFile(), '디스크가 보존돼야 한다').toEqual(before);
+    expect(await listCollections(FILE)).toHaveLength(2);
+  });
+
+  it('삭제 중 읽기가 EBUSY 면 파일을 비우지 않는다 (가장 파괴적인 경로)', async () => {
+    await saveCollection(FILE, { name: 'keep-1', docHashes: [H('a')] }, T0);
+    const r2 = await saveCollection(FILE, { name: 'keep-2', docHashes: [H('b')] }, T0);
+    const before = readFile();
+
+    const fsp = (await import('fs/promises')).default;
+    (fsp.readFile as ReturnType<typeof vi.fn>).mockRejectedValueOnce(ebusy());
+    const r = await deleteCollection(FILE, r2.id!);
+
+    expect(r.ok).toBe(false);
+    expect(readFile(), 'filter([]) → saveFile([]) 로 통째 비워지면 안 된다').toEqual(before);
+    expect(await listCollections(FILE)).toHaveLength(2);
+  });
+
+  it('부재(ENOENT)는 종전대로 흡수 — 첫 저장이 정상 진행된다', async () => {
+    const r = await saveCollection(FILE, { name: 'first', docHashes: [H('a')] }, T0);
+    expect(r.ok).toBe(true);
+    expect(await listCollections(FILE)).toHaveLength(1);
+  });
+
+  it('손상 JSON 은 종전대로 흡수 — 재생성으로 자가치유', async () => {
+    V.files.set(FILE, '{ broken json');
+    const r = await saveCollection(FILE, { name: 'heal', docHashes: [H('a')] }, T0);
+    expect(r.ok).toBe(true);
+    expect(await listCollections(FILE)).toHaveLength(1);
+  });
+});

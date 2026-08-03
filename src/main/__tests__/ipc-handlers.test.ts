@@ -149,6 +149,17 @@ beforeEach(() => {
   H.store.load.mockReturnValue(undefined);
   H.store.save.mockReturnValue(undefined);
   H.store.delete.mockReturnValue(undefined);
+  // QA22(D-MED): fsp 목 **구현**도 매 테스트 재설정한다. clearAllMocks 는 call 만 비우므로,
+  // file:open-path 테스트가 세운 `readFile → '%PDF-1.4 test'` 가 파일 끝까지 살아남아
+  // collections 테스트가 **손상 JSON reset 경로**를 탔다(stderr 에 "load failed, resetting" 실측).
+  // 그 결과 "파일 없음(ENOENT) → 빈 배열" 테스트는 ENOENT 분기를 전혀 검증하지 않았고,
+  // 그 분기가 rethrow 로 바뀌어도 그린이었다. writeFile 의 EACCES 목도 같은 방식으로 누수됐다.
+  H.fsp.readFile.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+  H.fsp.writeFile.mockResolvedValue(undefined);
+  H.fsp.rename.mockResolvedValue(undefined);
+  H.fsp.unlink.mockResolvedValue(undefined);
+  H.fsp.lstat.mockResolvedValue({ isSymbolicLink: () => false });
+  H.fsp.stat.mockResolvedValue({ isFile: () => true, size: 1000 });
 });
 
 describe('핸들러 등록', () => {

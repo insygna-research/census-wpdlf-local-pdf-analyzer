@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback } from 'react';
-import { useAppStore, whenSettingsCommitted } from './store';
+import { useAppStore, whenSettingsCommitted, isDocSwapPending } from './store';
 import { AiClient } from './ai-client';
 import { chunkText, chunkTextWithOverlap, chunkTextWithOverlapByPage } from './chunker';
 import { formatPageLabel, normalizeCitationPlacement, stripCitations, sanitizeDocLabelName } from './citation';
@@ -1061,8 +1061,12 @@ export function useQa() {
     // 지운다(직전 persistCurrentSession 은 isQaGenerating 이라 skip). useSummarize 가 QA20 에서
     // 고친 결함의 정확한 쌍둥이 — 그때 요약 버튼만 고치고 이쪽을 함께 훑지 않았다.
     // (handlePdfData 의 isQaGenerating 검사는 함수 진입 1회뿐이라 await parsePdf 동안 무방비다.)
+    // QA22(A-MED): 개별 플래그 열거 → isDocSwapPending 파생 술어(store.ts)로 통일.
+    // `sessionRestorePending`(교체 직후 복원 진행 중)이 빠져 있어, 문서를 열거나 탭을 전환한
+    // 직후 질문하면 복원이 옛 대화를 메모리에 올리지 못하고(skipQaRestore) 이어지는 자동저장이
+    // qaMessages 를 통째 교체해 **디스크의 이전 대화가 파괴**됐다.
     if (state.isGenerating || state.isQaGenerating || state.isCollectionBusy
-        || state.isParsing || state.isTabSwitching || !state.document) return;
+        || isDocSwapPending(state) || !state.document) return;
     // 교차 요약 준비(gather) 중에는 질문 차단 — isQaGenerating 세팅 전 창에서 끼어들어 qaStream/
     // qaRequestId 를 클로버링하던 race 방지(QA R: 컬렉션 요약 동시성).
     // RAG 인덱싱 중에는 질문 차단 — 부분 인덱스로 답변해 정확도가 떨어지는 문제 방지

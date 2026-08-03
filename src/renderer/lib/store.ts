@@ -128,6 +128,36 @@ function safeRandomId(): string {
  *
  * window.electronAPI 가 없는 테스트 환경에서는 silent no-op.
  */
+/**
+ * **문서 교체가 진행 중이거나 임박한 상태** — 이 창에서 시작한 생성 작업(요약·질문·교차요약)은
+ * 폐기되거나 **디스크의 기존 데이터를 파괴한다**. 모든 생성 진입 가드와 UI 비활성 조건은
+ * 개별 플래그를 열거하지 말고 이 술어 하나를 쓴다.
+ *
+ * QA22(A-MED): 이 함수가 존재하는 이유는 **같은 결함이 세 사이클 연속 재발했기 때문**이다.
+ *  - QA20: 요약 버튼에만 `isParsing` 을 넣고 Q&A·컬렉션을 빠뜨림
+ *  - QA21: `isParsing`+`isTabSwitching` 을 넣으면서 `sessionRestorePending` 을 빠뜨림
+ * 매번 "이번엔 다 훑었다" 고 판단했고 매번 하나가 남았다. 플래그를 하나씩 열거하는 방식이
+ * 구조적으로 실패한다는 뜻이므로, 새 플래그가 생기면 **여기 한 곳만** 고치도록 모은다
+ * (window-flush-policy.ts 가 QA16→17→18 3연속 결함 후 같은 방식으로 종결된 선례).
+ *
+ * 세 플래그가 덮는 구간이 서로 다르다는 점이 핵심이다:
+ *  - `isParsing`            — 파싱 중(교체 **예정**). setDocument 전.
+ *  - `isTabSwitching`       — 탭 전환 중(교체 예정). 세션-우선 복원은 isParsing 을 쓰지 않는다.
+ *  - `sessionRestorePending`— 교체 **직후**, 복원(api.load)이 아직 진행 중. 앞의 둘은 이미 false 다.
+ *    이 창에서 질문하면 `isQaGenerating` 때문에 복원의 `setQaMessages` 가 skip 되어 옛 대화가
+ *    메모리에 오르지 못하고, 이어지는 자동저장이 `qaMessages` 를 **통째 교체**(요약과 달리 머지
+ *    대상이 아니다)해 디스크의 대화를 파괴한다.
+ *
+ * ⚠️ 부작용 인지: `sessionRestorePending` 이 고착되면(session:load IPC 가 영영 resolve 되지 않는
+ * 경우) 생성 기능이 전부 막힌다. 기존에도 그 상태에서 RAG 빌드가 영구 보류였으므로 새로운
+ * 실패 모드는 아니지만 영향 범위는 넓어졌다. 복원은 정상 경로에서 수백 ms 안에 끝난다.
+ */
+export function isDocSwapPending(
+  s: Pick<AppState, 'isParsing' | 'isTabSwitching' | 'sessionRestorePending'>,
+): boolean {
+  return s.isParsing || s.isTabSwitching || s.sessionRestorePending;
+}
+
 function abortInFlightAiRequests(...requestIds: (string | null | undefined)[]): void {
   const electronAPI = (globalThis as { window?: { electronAPI?: { ai?: { abort?: (id: string) => Promise<unknown> } } } })
     .window?.electronAPI;

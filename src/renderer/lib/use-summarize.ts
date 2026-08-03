@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback } from 'react';
-import { useAppStore } from './store';
+import { useAppStore, isDocSwapPending } from './store';
 import { t } from './i18n';
 import { PROVIDER_LABELS, isCustomSummaryType } from '../types';
 import { AiClient } from './ai-client';
@@ -628,7 +628,7 @@ export function useSummarize() {
     // 경로인 **세션-우선 복원**(restoreTabFromSession)은 isParsing 을 세우지 않으므로, 탭 클릭
     // 직후 요약을 시작하면 복원이 끝나며 그 요약이 그대로 증발했다(같은 증상, 다른 경로).
     if (!currentState.document || currentState.isGenerating || currentState.isQaGenerating
-        || currentState.isCollectionBusy || currentState.isParsing || currentState.isTabSwitching) return;
+        || currentState.isCollectionBusy || isDocSwapPending(currentState)) return;
     const currentSettings = currentState.settings;
     const currentSummaryType = currentState.summaryType;
     // 페이지 범위 요약: 범위가 일부면 문서를 마스킹된 사본으로 좁힌다(인용 [p.N] 절대번호 보존).

@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback, memo } from 'react';
 import { useQa } from '../lib/use-qa';
 import { abortCollectionGather } from '../lib/use-collection-summary';
-import { useAppStore } from '../lib/store';
+import { useAppStore, isDocSwapPending } from '../lib/store';
 import { useT } from '../lib/i18n';
 import { SafeMarkdown } from '../lib/safe-markdown';
 import { CollectionBar } from './CollectionBar';
@@ -49,9 +49,9 @@ export function QaChat() {
   // QA21(B-MED): 문서 교체가 예정된 상태(파싱/탭 전환)도 입력 차단. 진실의 원천은 훅
   // (use-qa 의 handleAsk 가드)이고 여기는 그 상태를 시각화한다 — 누락되면 입력창이 활성인데
   // 전송만 조용히 무시되는 "죽은 입력" 이 된다.
-  const isParsing = useAppStore((s) => s.isParsing);
-  const isTabSwitching = useAppStore((s) => s.isTabSwitching);
-  const docSwapPending = isParsing || isTabSwitching;
+  // QA22(A-MED): 개별 플래그 열거 → isDocSwapPending. sessionRestorePending(복원 진행 중)이
+  // 빠져 있어, 문서를 연 직후 질문하면 디스크의 이전 대화가 파괴됐다(store.ts 주석 참조).
+  const docSwapPending = useAppStore(isDocSwapPending);
   const t = useT();
   const [input, setInput] = useState('');
   // M4(UX): 답변별 복사 — 복사 직후 짧게 ✓ 피드백. (요약엔 복사가 있었지만 Q&A 답변엔 없어

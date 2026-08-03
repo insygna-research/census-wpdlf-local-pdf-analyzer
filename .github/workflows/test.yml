@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # QA22(D): 셔플 잡 전용 야간 트리거. 아래 shuffle 잡 주석 참조.
+  schedule:
+    - cron: '0 18 * * *' # 매일 03:00 KST
 
 permissions:
   contents: read
@@ -76,7 +79,21 @@ jobs:
       # 드러나던 결함 차단.
       - run: npx tsc -p tsconfig.e2e.json
 
-      - run: npm test
+      # QA22(D-MED): junit 리포터 + 실패 시 아티팩트. 이전에는 유닛 잡이 실패해도 **어떤 파일도
+      # 남기지 않아** 기본 리포터 출력이 raw 로그에만 묻혔다 — 2026-08-03 릴리즈 게이트에서 1건이
+      # 실패했는데 스크롤백을 놓쳐 **테스트 이름을 영영 확보하지 못한** 직접 원인이다(이후 25회
+      # 재현 0). e2e 잡은 이미 trace 를 올리고 release.yml 도 진단을 올리는데 유닛만 빠져 있었다.
+      # 성공 시에는 업로드하지 않으므로 비용 0.
+      - run: npm test -- --reporter=default --reporter=junit --outputFile=test-results/junit.xml
+
+      - name: Upload unit test results on failure
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: unit-failure-${{ matrix.os }}-node${{ matrix.node-version }}-${{ github.run_id }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 7
 
       # R29 #1: supply-chain 가시성 — high 이상의 알려진 취약점을 PR/push 단계에서 빠르게 노출.
       # 현재 알려진 dev-only 의존성(vite/postcss/xmldom/ip-address) 은 major bump 가 필요해 별도 라운드 예정.
@@ -217,3 +234,39 @@ jobs:
           path: test-results/
           if-no-files-found: warn
           retention-days: 7
+
+  # QA22(D): 테스트 **순서 의존**을 자동 감시하는 야간 잡.
+  #
+  # 존재 이유: vitest.config.mts 는 `shuffle: false` 로 선언 순서를 고정하는데, 그 주석이
+  # "우발적 통과를 줄인다" 고 적어둔 것과 달리 실제로는 **고착**시킨다. 22차 QA 에서 셔플 4시드로
+  # 실측한 결과 고정 순서에서 그린인 **최대 11건**이 순서만 바꾸면 실패했고(3파일), 그중 1건은
+  # 단독 실행만으로도 실패했다 — 즉 회귀 넷이 앞 테스트의 상태 누수로 통과하고 있었다.
+  # 같은 클래스가 QA21(use-session.test.ts)에 이어 2사이클 연속 발견됐으므로 사람 감시에
+  # 맡기지 않는다. PR/push 를 막지 않도록 야간 전용 + non-blocking.
+  #
+  # 시드를 고정하지 않는다(매일 다른 순서) — 고정하면 그 순서에만 맞춰지고 나머지는 다시 숨는다.
+  # 실패 시 junit 아티팩트로 어느 테스트가 어떤 순서에서 깨졌는지 재현 가능하게 남긴다.
+  shuffle:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci
+      - name: Unit tests (randomized order)
+        run: npm test -- --sequence.shuffle.tests --reporter=default --reporter=junit --outputFile=test-results/junit.xml
+      - name: Upload shuffle failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: shuffle-failure-${{ github.run_id }}
+          path: test-results/
+          if-no-files-found: warn
+          retention-days: 14

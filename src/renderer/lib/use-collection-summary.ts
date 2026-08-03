@@ -1,4 +1,4 @@
-import { useAppStore } from './store';
+import { useAppStore, isDocSwapPending } from './store';
 import { AiClient } from './ai-client';
 import { resolveMembers } from './collection';
 import { t } from './i18n';
@@ -224,7 +224,7 @@ export async function generateCollectionSummary(kind: CollectionSummaryKind): Pr
   // 플래그). 그러면 새 문서에는 QaChat 이 없어 gather 의 유일한 취소 버튼이 사라진 채,
   // 탭·자동저장·요약이 전부 막힌 "취소 불가 정지" 상태가 된다.
   if (collectionSummaryInFlight || st.isGenerating || st.isQaGenerating || st.isCollectionBusy
-      || st.ragState.isIndexing || st.isParsing || st.isTabSwitching) return;
+      || st.ragState.isIndexing || isDocSwapPending(st)) return;
   const activeTab = st.openTabs.find((tb) => tb.filePath === st.document?.filePath);
   const activeDocHash = activeTab?.docHash;
   if (!activeDocHash) return;

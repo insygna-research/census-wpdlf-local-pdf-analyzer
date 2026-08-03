@@ -70,6 +70,17 @@ beforeEach(() => {
     view: 'settings',
     error: null,
     notice: null,
+    // QA22(D-MED): 생성계 플래그를 매 테스트 초기화한다. `:255` 의 isGenerating:true 를 어떤
+    // 훅도 되돌리지 않아 **파일 끝까지 누수**됐고, 이후 모든 렌더가 fieldset[disabled] +
+    // "AI 생성 중" 배너 상태로 마운트됐다(셔플 실행에서 6건 실패). negative assertion
+    // (queryByText(...).toBeNull())은 disabled 때문에 공허하게 통과한다.
+    isGenerating: false,
+    isQaGenerating: false,
+    isCollectionBusy: false,
+    isParsing: false,
+    isTabSwitching: false,
+    sessionRestorePending: false,
+    ragState: { isIndexing: false, progress: null, isAvailable: false, model: null, chunkCount: 0, error: null },
   });
   window.confirm = vi.fn(() => true);
 });

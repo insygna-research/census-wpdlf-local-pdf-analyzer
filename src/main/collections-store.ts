@@ -67,7 +67,16 @@ function normalizeCollection(raw: unknown): SavedCollection | null {
   return { id, name, docHashes, createdAt, lastAccessed };
 }
 
-async function loadFile(filePath: string): Promise<SavedCollection[]> {
+/**
+ * 실제 I/O 오류(EBUSY/EACCES/EPERM/EMFILE 등)와 "부재(ENOENT)"·"손상(JSON 파싱 실패)"를 구분.
+ * session-store.ts / api-keys-store.ts 와 동일 정의 — 세 스토어가 같은 원칙을 공유한다.
+ */
+function isRealIoError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException | null)?.code;
+  return typeof code === 'string' && code !== 'ENOENT';
+}
+
+async function readFile(filePath: string, throwOnIoError: boolean): Promise<SavedCollection[]> {
   try {
     const raw = await fsp.readFile(filePath, 'utf-8');
     const parsed = JSON.parse(raw) as CollectionStoreFile;
@@ -79,11 +88,40 @@ async function loadFile(filePath: string): Promise<SavedCollection[]> {
       .map(normalizeCollection)
       .filter((c): c is SavedCollection => c !== null);
   } catch (err) {
+    // QA22(C-MED): read-modify-write 호출자에게는 일시 I/O 오류를 전파한다(아래 주석 참조).
+    // JSON 파싱 오류는 code 가 없어 isRealIoError=false → 종전대로 빈 목록으로 자가치유.
+    if (throwOnIoError && isRealIoError(err)) throw err;
     if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') {
       console.warn('[collections] load failed, resetting:', (err as Error)?.message);
     }
     return [];
   }
+}
+
+/** 읽기 전용 경로(목록 조회)용 — 어떤 실패든 빈 목록으로 흡수한다. */
+async function loadFile(filePath: string): Promise<SavedCollection[]> {
+  return readFile(filePath, false);
+}
+
+/**
+ * read-modify-write 경로 전용 — **일시 I/O 오류를 삼키지 않는다**.
+ *
+ * QA22(C-MED, 데이터손실): QA21 이 세션 manifest 에 대해 정확히 이 결함을 진단하고
+ * `loadManifestForWrite` 로 고쳤는데, **형제 스토어인 이 파일에는 이식하지 않았다**
+ * (api-keys-store 의 readForWrite, session-store 의 loadManifestForWrite 는 있고 여기만 없었다).
+ *
+ * 흡수형 loadFile 을 RMW 의 read 쪽으로 쓰면 collections.json 읽기가 EBUSY/EPERM 으로 **한 번만**
+ * 실패해도:
+ *  - saveCollection: `[]` + 신규 1건 → 저장돼 있던 **모든 컬렉션이 소실**
+ *  - deleteCollection: `[].filter(...)` → `saveFile([])` → **파일을 통째로 비우면서 {ok:true} 반환**
+ * 세션은 부팅 시 reconcileSessions 가 디렉터리에서 회수하지만 **collections.json 은 유일한
+ * 사본이라 회수 경로가 아예 없다** — 세션보다 나쁘다.
+ *
+ * 일시 오류면 throw → 호출자의 기존 try/catch 가 {ok:false} 로 귀결돼 디스크를 보존한다.
+ * 부재/손상은 종전대로 빈 목록(첫 저장이 정상 진행돼야 한다).
+ */
+async function loadFileForWrite(filePath: string): Promise<SavedCollection[]> {
+  return readFile(filePath, true);
 }
 
 async function saveFile(filePath: string, collections: SavedCollection[]): Promise<void> {
@@ -112,7 +150,7 @@ export async function saveCollection(
   if (docHashes.length === 0 || name.length === 0) return { ok: false }; // 빈 멤버/이름은 거부
   const nowIso = new Date(now).toISOString();
   try {
-    let collections = await loadFile(filePath);
+    let collections = await loadFileForWrite(filePath);
     // C5-L(QA cycle5): 저장 시점에도 로드측(normalizeCollection)과 동일한 128자 절단 적용.
     // 비대칭이면 초과 id 저장 시 {ok:true, id:원본} 을 돌려주고 다음 list 는 절단 id 를 반환해
     // 렌더러의 후속 갱신이 별개 항목으로 갈라졌다(정상 흐름은 randomUUID 36자 — 정합성 결함).
@@ -150,7 +188,7 @@ export async function saveCollection(
 export async function deleteCollection(filePath: string, id: unknown): Promise<{ ok: boolean }> {
   if (typeof id !== 'string' || id.length === 0) return { ok: false };
   try {
-    const collections = await loadFile(filePath);
+    const collections = await loadFileForWrite(filePath);
     const next = collections.filter((c) => c.id !== id);
     await saveFile(filePath, next);
     return { ok: true };

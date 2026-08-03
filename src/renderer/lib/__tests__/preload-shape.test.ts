@@ -74,13 +74,18 @@ describe('preload contextBridge shape (R34 P2)', () => {
   });
 
   it('on* listeners 모두 unsubscribe 함수 반환 (memory leak 가드)', () => {
-    // ai.onToken, ai.onDone, onSetupProgress, onFileDropped, update.onStatus 모두 removeListener 반환
-    const onPatterns = ['onToken', 'onDone', 'onSetupProgress', 'onFileDropped', 'onStatus'];
+    // QA22(D-MED): 이전 구현은 `${name}:[\s\S]{0,600}?removeListener` 였는데, **600자 윈도가 다음
+    // 함수까지 넘어가** onToken 의 removeListener 를 지워도 ~450자 뒤 onDone 의 것에 매칭됐다.
+    // 뮤테이션 실증: onToken 만 감지 실패(무증상 통과), 나머지 4개는 감지. 하필 앱에서 가장 빈번한
+    // 리스너(ai:token — 스트리밍 토큰마다)의 구독 해제 누락을 "memory leak 가드" 가 못 잡았다.
+    // → **다음 on* 프로퍼티가 나오기 전까지**로 윈도를 좁혀 블록 경계를 넘지 못하게 한다.
+    // onFlushBeforeQuit 도 추가 — QA10/16/17/18/20 에서 반복해 깨진 종료 flush 핸드셰이크의
+    // 구독 경로인데 목록에서 통째로 빠져 있었다.
+    const onPatterns = ['onToken', 'onDone', 'onSetupProgress', 'onFileDropped', 'onStatus', 'onFlushBeforeQuit'];
     for (const name of onPatterns) {
-      // 각 listener 가 ipcRenderer.removeListener 를 반환하는지 source 에서 패턴 매칭
       const escaped = name.replace(/\$/g, '\\$');
-      // R45: onSetupProgress 시그니처가 source/model 필드로 길어져 400자 윈도를 초과 — 600 으로 확장
-      const block = PRELOAD_SRC.match(new RegExp(`${escaped}:[\\s\\S]{0,600}?removeListener`));
+      // `name:` 부터 **다음 `onXxx:` 프로퍼티 직전까지**만 본다(= 이 리스너의 블록).
+      const block = PRELOAD_SRC.match(new RegExp(`${escaped}:(?:(?!\\bon[A-Z]\\w*:)[\\s\\S])*?removeListener`));
       expect(block, `${name} 에서 removeListener 가 보이지 않음 — memory leak 회귀 가능`).not.toBeNull();
     }
   });

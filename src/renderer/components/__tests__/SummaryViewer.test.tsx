@@ -114,8 +114,15 @@ describe('SummaryViewer', () => {
     const user = userEvent.setup();
     render(<SummaryViewer />);
     await user.click(screen.getByRole('button', { name: 'PDF 파일로 내보내기' }));
-    // summaryToHtml 을 동적 import 하므로 호출은 마이크로태스크 뒤 — waitFor 로 대기.
-    await vi.waitFor(() => expect(M.exportPdf).toHaveBeenCalledTimes(1));
+    // summaryToHtml 을 **동적 import** 하므로 호출은 마이크로태스크 뒤 — waitFor 로 대기.
+    // QA22(플레이크 1위): 기본 1000ms 를 쓰면 안 된다. 이 import 는 react-dom/server +
+    // react-markdown + remark-gfm 모듈 그래프를 테스트 런타임에 로드하므로(export-html.tsx),
+    // fork-pool 경합 + 콜드 transform 에서 1초를 넘길 수 있다. 실측 단독 210ms / 병렬 410~459ms
+    // (24코어 idle) — 4 vCPU CI 러너에서 2.5배만 느려지면 초과한다.
+    // **같은 저장소가 이미 이 메커니즘으로 CI 플레이크를 겪었다**: safe-markdown-lazy.test.tsx 가
+    // 동일 사유로 5000ms 로 상향했는데(그 파일 주석 참조) 이 파일만 누락돼 있었다.
+    // 2026-08-03 릴리즈 게이트의 미특정 1건 실패(이후 25회 중 재현 0)의 유력 후보.
+    await vi.waitFor(() => expect(M.exportPdf).toHaveBeenCalledTimes(1), { timeout: 5000 });
     const call = M.exportPdf.mock.calls[0] as unknown as [string, string];
     expect(call[0]).toContain('<!DOCTYPE html>'); // 변환된 HTML
     expect(call[1]).toMatch(/^lecture_.*\.pdf$/);

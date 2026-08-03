@@ -68,6 +68,14 @@ function resetStore(over: Record<string, unknown> = {}) {
   useAppStore.setState({
     document: null, summary: null, summaryStream: '', qaMessages: [],
     isGenerating: false, isQaGenerating: false, sessionRestorePending: false,
+    // QA22(D-차단성): QA21 이 use-session.test.ts 에서 정확히 이 목록을 추가해 고친 결함이
+    // **형제 파일인 여기에는 이식되지 않았다**. describe #1 의 복원 테스트가 setSummary() 로
+    // summaryStreamComplete=true 를 세우면 이후 describe 까지 누수되어, fast-path 게이트
+    // (use-session.ts summaryIsCommitted)를 **누수된 true 로** 통과시킨다 — 그 결과 아래
+    // "컬렉션 gather 중 flush" 회귀 넷이 단독 실행 시 실패하고 전체 실행에서만 그린이었다.
+    summaryStreamComplete: false, summaryStreamType: null,
+    isCollectionBusy: false, summaryType: 'full',
+    isParsing: false, isTabSwitching: false,
     restoredSession: null, ragIndex: new VectorStore(),
     ragState: { isIndexing: false, progress: null, isAvailable: false, model: null, chunkCount: 0, error: null },
     settings: { ...useAppStore.getState().settings, persistSessions: true, provider: 'ollama' },
@@ -300,7 +308,14 @@ describe('doPersistCurrentSession — 요약 저장 키 소유권(summaryStreamT
     const vs = new VectorStore();
     vs.setModel('nomic-embed-text');
     vs.addChunk('청크', [1, 0, 0], 0, { pageStart: 1, pageEnd: 1 });
-    resetStore({ document: makeDoc(), summaryStream: '완료된 요약', summaryStreamType: 'full', ragIndex: vs });
+    // QA22(D-차단성): `summaryStreamComplete: true` 를 **픽스처가 명시**해야 한다. 이 값은 실제
+    // 앱에서 setSummary(성공 완주 커밋)가 세우는 것이고, "완료된 요약" 이라는 이 픽스처의 전제
+    // 자체다. 이전에는 앞선 describe 의 복원 테스트가 세워 둔 값이 누수돼 우연히 통과하고 있었다
+    // (resetStore 가 이 키를 리셋하지 않았음) — 단독 실행하면 실패하는 순서 의존 그린이었다.
+    resetStore({
+      document: makeDoc(), summaryStream: '완료된 요약', summaryStreamType: 'full',
+      summaryStreamComplete: true, ragIndex: vs,
+    });
     await persistCurrentSession();
     expect(api.session.save).toHaveBeenCalledTimes(1);
 
