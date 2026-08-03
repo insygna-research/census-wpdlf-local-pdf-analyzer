@@ -17,6 +17,14 @@ export async function loadSettings(
   filePath: string,
   defaults: Record<string, unknown>,
   validKeys: ReadonlySet<string>,
+  /**
+   * QA22(C-LOW): 값 검증기(선택). 이전에는 키 화이트리스트만 적용하고 **값은 그대로 통과**시켜,
+   * 수기 편집/부분 손상된 settings.json 이 렌더러로 유입됐다 — `customSummaryTemplates: "x"`(비배열)
+   * 는 `.filter` TypeError 로 설정 화면 렌더를 크래시시키고, `maxChunkSize: "abc"` 는 통합요약
+   * 예산 비교를 전부 무력화한다(조용한 품질 저하). settings:set 은 같은 값을 엄격히 검증하는데
+   * 로드 경로만 무방비였던 비대칭. 미전달 시 종전 동작(키 필터만).
+   */
+  validateValue?: (key: string, val: unknown) => { ok: true; value: unknown } | { ok: false },
 ): Promise<Record<string, unknown>> {
   try {
     const data = await fsp.readFile(filePath, 'utf-8');
@@ -24,9 +32,12 @@ export async function loadSettings(
     // 허용된 키만 로드하여 임의 속성 주입 방지
     const filtered: Record<string, unknown> = {};
     for (const key of Object.keys(parsed)) {
-      if (validKeys.has(key)) {
-        filtered[key] = parsed[key];
-      }
+      if (!validKeys.has(key)) continue;
+      if (!validateValue) { filtered[key] = parsed[key]; continue; }
+      const r = validateValue(key, parsed[key]);
+      // 검증 실패 키는 담지 않는다 → 아래 스프레드에서 defaults 값이 그대로 쓰인다.
+      if (r.ok) filtered[key] = r.value;
+      else console.warn(`[settings] invalid value for "${key}", using default`);
     }
     return { ...defaults, ...filtered };
   } catch (err) {

@@ -632,8 +632,14 @@ export async function touchSession(sessionsDir: string, docHash: string, now: nu
 export async function deleteSession(sessionsDir: string, docHash: string): Promise<{ ok: boolean }> {
   if (!isValidDocHash(docHash)) return { ok: false };
   try {
-    await fsp.rm(sessionDir(sessionsDir, docHash), { recursive: true, force: true });
+    // QA22(A-LOW): **read 를 파괴 이전에** 한다. QA21 이 loadManifestForWrite 를 throw 가능하게
+    // 바꾸면서 호출 순서를 보지 않아, 일시 I/O 오류 시 `rm` 은 이미 끝났는데 manifest 갱신만
+    // 실패해 **실체 없는 유령 엔트리**가 남았다. reconcileSessions 는 dirent 를 순회하므로
+    // "디렉터리 없는 manifest 엔트리" 는 회수하지 못한다 — LRU 가 그 항목을 evict 후보로 뽑을
+    // 때까지 최근목록·통계·byteSize 집계를 오염시킨다. 다른 5개 RMW 경로와 같은
+    // read-then-write 순서로 맞추면 일시 오류가 파괴 이전에 중단돼 디스크가 온전히 보존된다.
     const manifest = await loadManifestForWrite(sessionsDir);
+    await fsp.rm(sessionDir(sessionsDir, docHash), { recursive: true, force: true });
     manifest.entries = manifest.entries.filter((e) => e.docHash !== docHash);
     await saveManifest(sessionsDir, manifest);
     return { ok: true };

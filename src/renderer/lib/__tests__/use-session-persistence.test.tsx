@@ -33,7 +33,7 @@ vi.mock('../session-hash', () => ({ hashDocumentText: vi.fn(() => Promise.resolv
 
 import { useAppStore } from '../store';
 import { VectorStore } from '../vector-store';
-import { restoreSessionForDocument, useSessionPersistence, persistCurrentSession } from '../use-session';
+import { restoreSessionForDocument, useSessionPersistence, persistCurrentSession, __resetSessionModuleStateForTest } from '../use-session';
 
 function makeDoc(id = 'doc-1'): PdfDocument {
   return {
@@ -85,6 +85,8 @@ function resetStore(over: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // QA22(D-LOW): 모듈 스코프 상태(persistChain·시그니처·docHash 캐시·실패 래치) 초기화.
+  __resetSessionModuleStateForTest();
   api.session.save.mockResolvedValue({ ok: true });
   api.session.load.mockResolvedValue(null);
   api.ai.checkEmbedModel.mockResolvedValue({ available: true, model: 'nomic-embed-text' });

@@ -21,7 +21,7 @@ vi.stubGlobal('crypto', { subtle: realSubtle, randomUUID: () => 'test-uuid' });
 
 import { useAppStore } from '../store';
 import { VectorStore } from '../vector-store';
-import { restoreSessionForDocument, persistCurrentSession } from '../use-session';
+import { restoreSessionForDocument, persistCurrentSession, __resetSessionModuleStateForTest } from '../use-session';
 
 const HEX = /^[a-f0-9]{64}$/;
 
@@ -64,6 +64,8 @@ function persistedSession(doc: PdfDocument, withIndex: boolean): { session: Pers
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // QA22(D-LOW): 모듈 스코프 상태(persistChain·시그니처·docHash 캐시·실패 래치) 초기화.
+  __resetSessionModuleStateForTest();
   api.session.save.mockResolvedValue({ ok: true });
   api.session.savePartial.mockResolvedValue({ ok: true });
   api.session.loadMeta.mockResolvedValue(null); // 비-인덱싱 머지 경로 기본값(본문만 로드)

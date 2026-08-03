@@ -20,6 +20,15 @@ export function loadPdfjs(): Promise<PdfjsModule> {
     pdfjsPromise = import('pdfjs-dist').then((mod) => {
       mod.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
       return mod;
+    }).catch((err: unknown) => {
+      // QA22(B-LOW): **실패한 promise 를 캐시에 남기지 않는다.** 이전에는 rejected promise 가
+      // 그대로 보관돼, 일시적 실패(청크 로드 네트워크 오류·메모리 압박) 한 번이면 이후
+      // parsePdf·PdfViewer·extractPageImages 가 전부 같은 에러로 즉시 실패하고 **앱 재시작
+      // 전까지 어떤 PDF 도 열 수 없었다** — 재시도 수단이 아예 없는 영구 정지
+      // (QA18 의 "IPC 타임아웃 abort 자멸 → 영구정지" 와 동형 클래스).
+      // null 로 되돌리면 다음 호출이 새 import 를 시도해 스스로 회복한다.
+      pdfjsPromise = null;
+      throw err;
     });
   }
   return pdfjsPromise;

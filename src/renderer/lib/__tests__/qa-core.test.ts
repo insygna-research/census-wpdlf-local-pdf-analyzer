@@ -218,3 +218,38 @@ describe('selectRelevantChunks (L1-C03)', () => {
     expect(present).toEqual(sorted);
   });
 });
+
+// QA22(A-LOW): 키워드 폴백 TF 스코어링이 `[p.N]` 라벨에 오염되던 결함.
+// QA21 이 폴백 컨텍스트에 페이지 라벨을 붙이면서(인용 날조 방지) 생긴 부작용 —
+// countKeywordOccurrences 의 ASCII 분기가 `\b12\b` 로 매칭하는데 `[p.12]` 는 앞 `.` 과 뒤 `]` 가
+// 모두 워드바운더리라 라벨이 그대로 키워드 히트로 잡혔다. 한 페이지가 10문단이면 그 청크에
+// `[p.20]` 이 10회 → 본문 키워드의 1~5회를 압도하고, 예산이 사실상 2청크뿐이라 컨텍스트의
+// 절반이 무관한 페이지로 채워질 수 있다.
+describe('selectRelevantChunks — 인용 라벨이 스코어링을 오염시키지 않는다 (QA22)', () => {
+  // 취약 경로는 **ASCII 키워드 분기**다. countKeywordOccurrences 는 `^[a-z0-9]+$` 인 키워드만
+  // `<kw>` 정규식으로 매칭하는데, `[p.15]` 는 앞 `.` 과 뒤 `]` 가 모두 워드바운더리라
+  // 숫자 키워드 `15` 가 라벨에 그대로 히트한다(한글 키워드는 substring 경로라 무관).
+  it('숫자 키워드가 [p.N] 라벨에만 일치하는 청크를 선택하지 않는다', () => {
+    // labelParagraphsWithPages 의 실제 출력 형태 — **단락마다** 라벨이 붙는다(그게 증폭의 원인).
+    // A: 라벨 [p.15] 가 200번 반복되지만 본문은 질문과 무관 → 구 코드에선 키워드 '15' 가 200회 히트.
+    const SEP = '\n\n';
+    // 실제 증폭 구조: 무관한 페이지 A 는 **단락마다** [p.15] 라벨을 달아 키워드 '15' 가 청크당
+    // 수십 회 히트하는 반면, 근거가 있는 페이지 B 는 본문에 'figure 15' 가 몇 번만 나온다.
+    // 구 코드(라벨 포함 스코어링)에서는 A 가 압도해 예산을 전부 먹고 B 가 아예 선택되지 않았다.
+    const pageA = Array.from({ length: 300 }, () => '[p.15] unrelated filler about weather today.').join(SEP);
+    const pageB = Array.from({ length: 60 }, (_, i) =>
+      (i % 12 === 0 ? '[p.2] figure 15 shows the revenue curve.' : '[p.2] generic body sentence with no match.'),
+    ).join(SEP);
+    const full = pageA + SEP + pageB;
+
+    const picked = selectRelevantChunks('figure 15 explanation', full, 2000);
+
+    expect(picked, '본문에 근거가 있는 쪽이 선택돼야 한다').toContain('figure 15 shows');
+  });
+
+  it('반환값에는 라벨이 그대로 남는다 (인용 생성에 필요)', () => {
+    const page = '[p.7] ' + 'core content repeats here. '.repeat(400);
+    const picked = selectRelevantChunks('core content', `${page}\n\n${page}`, 4000);
+    expect(picked).toContain('[p.7]');
+  });
+});

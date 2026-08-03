@@ -18,6 +18,13 @@ const MAIN_INDEX_SRC = readFileSync(
   resolve(import.meta.dirname, '../index.ts'),
   'utf-8',
 );
+// QA22(C-LOW): 값 검증 switch 가 index.ts 의 settings:set 핸들러에서 settings-validate.ts 모듈로
+// 이관됐다(읽기 경로 loadSettings 와 규칙 공유). 가드도 그 모듈을 본다 — **이 가드가 리팩터링을
+// 실제로 잡아줬다**(옮긴 직후 case 0개로 red).
+const SETTINGS_VALIDATE_SRC = readFileSync(
+  resolve(import.meta.dirname, '../settings-validate.ts'),
+  'utf-8',
+);
 
 /** main/index.ts 의 `const defaultSettings = { ... } as const;` 리터럴에서 top-level 키를 추출. */
 function extractDefaultSettingsKeys(src: string): string[] {
@@ -52,15 +59,21 @@ describe('main defaultSettings — settings 키 drift 가드 (QA11)', () => {
   // QA19(A-LOW): 5단계 절차 중 4단계(`settings:set` 의 switch validator)만 가드가 없었다.
   // case 를 빠뜨리면 두 drift 가드는 green 인데 `filtered` 에 키가 안 담겨 **사용자가 토글을
   // 켜고 저장해도 값이 저장되지 않는다**(패널 재진입 시 원복). 소스 스캔으로 대조한다.
-  it('settings:set switch 의 case 집합 == VALID_SETTINGS_KEYS (4단계 drift 가드)', () => {
-    const block = /for \(const key of VALID_SETTINGS_KEYS\)([\s\S]*?)\n      const updated =/.exec(MAIN_INDEX_SRC);
-    expect(block, 'settings:set 의 검증 루프를 찾지 못했습니다 — 구조가 바뀌었다면 정규식을 갱신하세요').not.toBeNull();
+  it('validateSettingValue 의 case 집합 == VALID_SETTINGS_KEYS (4단계 drift 가드)', () => {
+    const block = /export function validateSettingValue\(([\s\S]*?)\n\}/.exec(SETTINGS_VALIDATE_SRC);
+    expect(block, 'validateSettingValue 를 찾지 못했습니다 — 구조가 바뀌었다면 정규식을 갱신하세요').not.toBeNull();
     const cases = [...block![1]!.matchAll(/case '(\w+)':/g)].map((m) => m[1]!).sort();
     expect(cases).toEqual([...VALID_SETTINGS_KEYS].sort());
   });
 
   it('회귀 가드: autoCheckUpdates 가 switch validator 에 존재 (v0.31.30 신규 키)', () => {
-    expect(MAIN_INDEX_SRC).toContain("case 'autoCheckUpdates':");
+    expect(SETTINGS_VALIDATE_SRC).toContain("case 'autoCheckUpdates':");
+  });
+
+  // QA22(C-LOW): 읽기 경로도 같은 검증기를 쓰는지 — 이 배선이 빠지면 수기 편집/손상된
+  // settings.json 값이 렌더러로 그대로 유입돼 설정 화면이 크래시할 수 있다(비배열 템플릿).
+  it('loadSettings 호출이 validateSettingValue 를 전달한다 (읽기 경로 검증 배선)', () => {
+    expect(MAIN_INDEX_SRC).toMatch(/_loadSettings\([\s\S]{0,200}?validateSettingValue/);
   });
 
   it('추출기가 중첩 키를 top-level 로 오인하지 않는다', () => {

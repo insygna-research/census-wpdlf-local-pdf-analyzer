@@ -18,6 +18,13 @@ export function TabBar() {
   // 없어, 전환 중 다른 탭을 클릭하면 switchToTab 이 조용히 return 했다(index.bin 이 큰 문서에선
   // 수 초간 클릭이 안 먹는 것처럼 보임). store 이관으로 이제 시각화할 수 있다.
   const isTabSwitching = useAppStore((s) => s.isTabSwitching);
+  // QA22(A-LOW): **비활성 탭 닫기의 실제 가드**를 그대로 반영한다. closeTab 은 비활성 탭에서도
+  // isCollectionBusy / collectionOpenInFlight / isTabSwitching 이면 **조용히 return** 하는데,
+  // 버튼은 `blocked && isActive` 라 항상 enabled 였다 — 누르면 아무 일도 안 일어난다. Tier4(QA21)가
+  // blocked 에 isTabSwitching 을 추가하며 전환 버튼은 시각화했지만 닫기 버튼의 비대칭은 남았고,
+  // 오히려 무음 무시 조건이 셋으로 늘었다. (진실의 원천은 훅 가드, UI 는 그 시각화 — Tier2 원칙)
+  const collectionOpenInFlight = useAppStore((s) => s.collectionOpenInFlight);
+  const inactiveCloseBlocked = isCollectionBusy || collectionOpenInFlight || isTabSwitching;
   const t = useT();
 
   if (openTabs.length === 0) return null;
@@ -54,10 +61,11 @@ export function TabBar() {
               >
                 📄 {tab.fileName}
               </button>
-              {/* 비활성 탭 닫기는 목록 제거뿐이라 생성 중에도 안전 — 활성 탭만 차단 (closeTab 내부 가드와 일치) */}
+              {/* 활성 탭은 blocked(생성/파싱/전환), 비활성 탭은 컬렉션·전환 진행 중에만 차단 —
+                  둘 다 closeTab 의 실제 가드와 1:1 대응(QA22 A-LOW). */}
               <button
                 onClick={() => { void closeTab(tab.filePath); }}
-                disabled={blocked && isActive}
+                disabled={isActive ? blocked : inactiveCloseBlocked}
                 aria-label={t('tabs.close', { name: tab.fileName })}
                 className="shrink-0 rounded px-0.5 text-gray-400 hover:text-red-500 disabled:opacity-40 disabled:cursor-not-allowed opacity-60 group-hover:opacity-100"
               >

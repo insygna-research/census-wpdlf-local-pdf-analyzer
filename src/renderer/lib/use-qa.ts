@@ -108,7 +108,15 @@ export function selectRelevantChunks(
   }
 
   const scored = chunks.map((chunk, idx) => {
-    const lower = chunk.toLowerCase();
+    // QA22(A-LOW): **스코어링은 인용 라벨을 제외한 본문 기준**으로 한다. QA21 이 이 폴백
+    // 컨텍스트에 `[p.N]` 라벨을 붙이면서(인용 날조 방지) 부작용이 생겼다 — countKeywordOccurrences
+    // 의 ASCII 분기는 `12` 로 매칭하는데 `[p.12]` 는 앞 `.` 과 뒤 `]` 가 모두 워드바운더리라
+    // **라벨이 그대로 키워드 히트로 잡힌다**(extractKeywords 가 2자 이상만 통과시키므로 두 자리
+    // 이상 숫자가 전부 노출). 한 페이지가 10문단이면 그 청크에 `[p.20]` 이 10회 등장해 본문
+    // 키워드의 통상 1~5회를 압도하고, 컨텍스트 예산이 사실상 2청크뿐이라 **절반이 무관한
+    // 페이지로 채워질 수 있다**("20년 계약 조건" 같은 두 자리 숫자 질문이면 도달).
+    // 반환은 라벨 포함 원본 그대로 — 인용 생성에는 라벨이 필요하다.
+    const lower = stripCitations(chunk).toLowerCase();
     const score = keywords.reduce((sum, kw) => sum + countKeywordOccurrences(lower, kw), 0);
     return { chunk, score, idx };
   });
@@ -1187,7 +1195,15 @@ export function useQa() {
       //  - 설정이 OFF 거나
       //  - RAG 가 unavailable 하거나 인덱스가 비어있으면
       //  → 기존 단일 pass 스트리밍 fast path.
+      // QA22(A-LOW): 인덱스가 **현재 임베딩 모델과 불일치**하면 검증도 하지 않는다. QA21 이
+      // ragSearch 에만 embedModelChanged 표면화를 넣어, 검색은 폴백으로 내려가는데 검증은 그대로
+      // 돌았다 — setRagState 는 merge 라 isAvailable 이 내려가지 않고, verifyAnswerSentences 의
+      // 방어는 차원 가드뿐이라 **같은 차원의 다른 모델**은 통과한다. 그러면 무의미한 유사도로
+      // needsRefine 이 거의 항상 참이 되어 매 답변마다 **두 번째 LLM 호출**이 발생한다
+      // (클라우드면 실과금). 답이 틀리진 않지만 원인 불명의 지연·비용.
+      const indexModelMismatch = useAppStore.getState().ragState.error === 'embedModelChanged';
       const useVerification = settings.enableAnswerVerification !== false
+        && !indexModelMismatch
         && (
           // 컬렉션 모드: 멤버 인덱스(answerVerifier)로 검증
           (answerVerifier !== undefined && answerVerifier.size > 0)

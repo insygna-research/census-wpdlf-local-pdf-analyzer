@@ -22,8 +22,14 @@ export default defineConfig({
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     // 명시적 exclude — out/ 의 빌드 산출물에 source map 잔여물이 있어도 잡히지 않도록.
     exclude: ['node_modules/**', 'out/**', 'dist/**'],
-    // 회귀 안정성을 위해 alphanumeric 순서로 고정 — 테스트 파일 추가 순서에 의존하는
-    // 우발적 통과를 줄인다.
+    // 파일 순서를 alphanumeric 으로 고정 — 실패 재현성을 위해서다.
+    //
+    // QA22(D-LOW) 주석 정정: 이전 주석은 이 설정이 "우발적 통과를 줄인다" 고 했으나 **반대다**.
+    // 순서 고정은 테스트 간 상태 누수로 인한 우발적 통과를 줄이는 게 아니라 **고착**시킨다.
+    // 실측(셔플 4시드): 고정 순서에서 그린인 최대 11건이 순서만 바꾸면 실패했고(3파일),
+    // 그중 1건은 단독 실행만으로도 실패했다 — 회귀 넷이 앞 테스트의 누수로 통과하고 있었다.
+    // 그 3파일은 QA22 에서 수정했고, 재발은 test.yml 의 **야간 셔플 잡**이 감시한다
+    // (PR/push 는 재현성을 위해 고정 순서 유지).
     sequence: { shuffle: false },
     // v0.18.19 patch R32 P3: pool 명시적 pinning. 다수의 테스트 파일이 모듈 init 시점에
     // `vi.stubGlobal('window', { electronAPI: ... })` 를 호출하는데, default worker pool 의

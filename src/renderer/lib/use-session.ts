@@ -512,3 +512,22 @@ export function useSessionPersistence(): void {
     return () => clearTimeout(timer);
   }, [document, summaryStream, qaMessages, ragChunkCount, ragIsIndexing, isGenerating, isQaGenerating, isCollectionBusy, persistEnabled, pending]);
 }
+
+/**
+ * 모듈 스코프 상태 초기화 — **테스트 전용**.
+ *
+ * QA22(D-LOW): 이 모듈은 persist 체인·인덱스 시그니처·docHash 캐시·연속 실패 카운터를 모듈
+ * 스코프에 들고 있는데 어떤 테스트도 이를 리셋하지 않았다. 특히 `saveFailureNotified` 는 한 번
+ * true 가 되면 **래치**라, 그 뒤로는 같은 파일의 어떤 테스트에서도 `session.saveFailedNotice`
+ * 통지가 영원히 발화하지 않는다. 지금은 그 경로를 검증하는 테스트가 뒤에 없어 무증상이지만,
+ * 추가하는 순간 "앞 테스트 때문에 조용히 통과" 하는 함정이 된다 — 이번 사이클에서 세 파일이
+ * 정확히 그 형태로 잘못 통과하고 있었으므로(use-session-persistence / ipc-handlers /
+ * SettingsPanel) 같은 클래스를 미리 닫는다. 테스트의 beforeEach 에서 호출할 것.
+ */
+export function __resetSessionModuleStateForTest(): void {
+  persistedIndexSig = null;
+  persistChain = Promise.resolve();
+  docHashCache.clear();
+  consecutiveSaveFailures = 0;
+  saveFailureNotified = false;
+}

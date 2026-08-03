@@ -14,6 +14,7 @@ import { AUTO_CHECK_STARTUP_DELAY_MS } from './update-policy';
 import type { UpdateState } from '../shared/update-types';
 import { generate, abortGenerate, abortAllRequests, checkAvailability, analyzeImage, analyzeImageForOcr, generateEmbeddings, checkEmbeddingAvailability, cleanupAiService, registerEmbedRequest, unregisterEmbedRequest, GEMINI_EMBED_MODEL } from './ai-service';
 import { MAX_PDF_SIZE_BYTES, isLocalhostHost, isValidOllamaUrl } from '../shared/constants';
+import { validateSettingValue } from './settings-validate';
 // v0.18.19 patch R34 P2: settings 키 단일 출처. 이전엔 본 파일 두 곳에 별도 리터럴이 있었고
 // R33 Surface 4 P3 가 drift 가드 부재를 지적. settings-keys.ts 가 양쪽을 derive 함.
 import { VALID_SETTINGS_KEYS, VALID_SETTINGS_KEYS_SET } from './settings-keys';
@@ -119,7 +120,7 @@ function localeAwareDefaults(): Record<string, unknown> {
 }
 
 async function loadSettings(): Promise<Record<string, unknown>> {
-  const settings = await _loadSettings(settingsPath, localeAwareDefaults(), VALID_SETTINGS_KEYS_SET);
+  const settings = await _loadSettings(settingsPath, localeAwareDefaults(), VALID_SETTINGS_KEYS_SET, validateSettingValue);
   // R43 F5: 레거시 가드 — uiLanguage 는 저장돼 있지만 summaryLanguage 키가 도입 전이라
   // 파일에 없는 사용자(v0.16 이전 마지막 저장)가 비-ko 로캘 OS 에서 요약 언어만 묵시적으로
   // en 으로 바뀌는 회귀 차단. 저장된 UI 언어를 따른다. (merge 결과로는 키 출처를 구분할 수
@@ -617,70 +618,10 @@ export function registerIpcHandlers(): void {
       for (const key of VALID_SETTINGS_KEYS) {
         if (!(key in partial)) continue;
         const val = partial[key];
-        // 값 타입 검증
-        switch (key) {
-          case 'provider':
-            if (VALID_PROVIDERS.includes(val as typeof VALID_PROVIDERS[number])) filtered[key] = val;
-            break;
-          case 'model':
-            if (typeof val === 'string' && val.length > 0 && val.length <= 100) filtered[key] = val;
-            break;
-          case 'ollamaBaseUrl':
-            // QA22(C-MED): 판정을 shared 의 isValidOllamaUrl 로 단일화 — 렌더러 UI 가 같은 함수로
-            // 저장 전에 차단하므로 규칙이 갈라지면 "UI 통과 → main 무음 드롭" 이 재현된다.
-            if (isValidOllamaUrl(val)) filtered[key] = val as string;
-            break;
-          case 'theme':
-            if (VALID_THEMES.includes(val as typeof VALID_THEMES[number])) filtered[key] = val;
-            break;
-          case 'uiLanguage':
-            if (VALID_UI_LANGUAGES.includes(val as typeof VALID_UI_LANGUAGES[number])) filtered[key] = val;
-            break;
-          case 'defaultSummaryType':
-            if (VALID_SUMMARY_TYPES.includes(val as typeof VALID_SUMMARY_TYPES[number])) filtered[key] = val;
-            break;
-          case 'maxChunkSize':
-            // QA9(C-LOW): Number.isInteger 로 float(예 1500.5) 저장 방지 — dim 검증(Number.isInteger)과 대칭.
-            if (typeof val === 'number' && Number.isInteger(val) && val >= 1000 && val <= 16000) filtered[key] = val;
-            break;
-          case 'enableImageAnalysis':
-            if (typeof val === 'boolean') filtered[key] = val;
-            break;
-          case 'enableOcrFallback':
-            if (typeof val === 'boolean') filtered[key] = val;
-            break;
-          case 'summaryLanguage':
-            if (['ko', 'en', 'ja', 'zh', 'auto'].includes(val as string)) filtered[key] = val;
-            break;
-          case 'customSummaryTemplates':
-            // 커스텀 요약 템플릿 배열 — 각 항목 {id,name,prompt} 문자열 + 개수/길이 상한(renderer
-            // MAX_CUSTOM_TEMPLATES/NAME/PROMPT 와 정합). 잘못된/빈 항목은 버리고 유효 항목만 저장하며,
-            // id/name/prompt 를 슬라이스해 과대 페이로드·프로토타입 오염을 방어한다.
-            if (Array.isArray(val)) {
-              const clean = val
-                .filter((it): it is { id: string; name: string; prompt: string; strategy?: unknown } => {
-                  if (!it || typeof it !== 'object') return false;
-                  const o = it as Record<string, unknown>;
-                  return typeof o.id === 'string' && o.id.length > 0 && o.id.length <= 64
-                    && typeof o.name === 'string' && o.name.trim().length > 0
-                    && typeof o.prompt === 'string' && o.prompt.trim().length > 0;
-                })
-                .slice(0, 20)
-                // strategy 는 'chunked' 만 유효, 그 외(미지정/오값)는 'single' 로 정규화(하위호환).
-                .map((it) => ({ id: it.id.slice(0, 64), name: it.name.slice(0, 60), prompt: it.prompt.slice(0, 4000), strategy: it.strategy === 'chunked' ? 'chunked' : 'single' }));
-              filtered[key] = clean;
-            }
-            break;
-          case 'enableAnswerVerification':
-            if (typeof val === 'boolean') filtered[key] = val;
-            break;
-          case 'persistSessions':
-            if (typeof val === 'boolean') filtered[key] = val;
-            break;
-          case 'autoCheckUpdates':
-            if (typeof val === 'boolean') filtered[key] = val;
-            break;
-        }
+        // QA22(C-LOW): 검증을 settings-validate 모듈로 단일화 — loadSettings(읽기 경로)가
+        // 같은 규칙을 쓰게 해, 수기 편집/손상 값이 렌더러로 유입되는 비대칭을 닫는다.
+        const r = validateSettingValue(key, val);
+        if (r.ok) filtered[key] = r.value;
       }
       const updated = { ...current, ...filtered };
       await saveSettings(updated);

@@ -97,7 +97,7 @@ export function PdfViewer({ pdfBytes, targetPage, jumpNonce = 0, onClose }: PdfV
   const renderedPagesRef = useRef<Set<number>>(new Set());
   // R30 (v0.18.17): targetPage 폴링 / 외부 트리거에서 명시적으로 페이지 렌더를 enqueue
   // 할 수 있도록 ref 로 노출. effect 가 재실행될 때마다 새 enqueue 로 덮어씌워짐.
-  const enqueueRenderRef = useRef<((pageNum: number) => void) | null>(null);
+  const enqueueRenderRef = useRef<((pageNum: number, priority?: boolean) => void) | null>(null);
   // DR-01 리사이즈 재렌더: container 너비가 실제로 변할 때마다 증가 → 렌더 effect 재실행
   const [renderVersion, setRenderVersion] = useState(0);
   // 목차(아웃라인) — 로드된 doc 에서 pdfjs getOutline 으로 마운트 시 1회 추출. 영속화 안 함.
@@ -266,12 +266,24 @@ export function PdfViewer({ pdfBytes, targetPage, jumpNonce = 0, onClose }: PdfV
     // JS 측에서 직접 직렬화하면 첫 페이지가 가장 빨리 그려지고 가시성 우선순위 보존이 쉽다.
     const queue: number[] = [];
     let pumping = false;
-    const enqueue = (pageNum: number): void => {
+    const enqueue = (pageNum: number, priority = false): void => {
       if (cancelled) return;
       if (pageNum < 1 || pageNum > totalPages) return;
       if (renderedPagesRef.current.has(pageNum)) return;
-      if (queue.indexOf(pageNum) !== -1) return;
-      queue.push(pageNum);
+      const existing = queue.indexOf(pageNum);
+      if (existing !== -1) {
+        // 이미 대기 중인데 우선순위 요청이 오면 앞으로 끌어올린다(중복 삽입은 하지 않음).
+        if (priority && existing > 0) queue.splice(existing, 1);
+        else return;
+      }
+      // QA22(B-LOW): **인용 점프 대상은 큐 앞으로.** 렌더는 단일 워커 직렬(pump)인데 큐가
+      // FIFO 라, loaded 커밋 시 초기 가시범위(placeholder 200px 기준 ±1뷰포트 ≈ 10~12페이지)가
+      // 먼저 들어가고 targetPage 가 **그 뒤에** 붙었다. 대상 페이지는 10여 장을 렌더한 뒤에야
+      // 그려지는데 폴링 상한은 30×100ms=3초 — 대형 페이지/저사양에서 초과하면 jumpTimeout
+      // notice 와 함께 **미렌더 빈 슬롯으로 스크롤**된다. 인용 클릭은 이 앱의 핵심(환각 검증)이라
+      // 사용자가 가장 먼저 보게 되는 화면이 비어 있으면 안 된다.
+      if (priority) queue.unshift(pageNum);
+      else queue.push(pageNum);
       void pump();
     };
     // R30: targetPage 폴링이 IO 발화에 의존하지 않고 직접 렌더를 요청할 수 있도록 노출.
@@ -475,7 +487,7 @@ export function PdfViewer({ pdfBytes, targetPage, jumpNonce = 0, onClose }: PdfV
     // R30 (v0.18.17): target wrapper 가 IO viewport 범위 밖이면 IO 가 발화하지 않아
     // 폴링이 maxAttempts 까지 헛돌고 placeholder 200px 기준 부정확한 scrollIntoView 로
     // 폴백하던 결함 해결. IO 발화 여부와 무관하게 직접 enqueue.
-    enqueueRenderRef.current?.(targetPage);
+    enqueueRenderRef.current?.(targetPage, true);
     let attempts = 0;
     const maxAttempts = 30;
     const interval = setInterval(() => {
@@ -483,7 +495,7 @@ export function PdfViewer({ pdfBytes, targetPage, jumpNonce = 0, onClose }: PdfV
       // QA: 폴링 도중 렌더 effect 가 재실행되면(리사이즈→renderVersion↑) 큐·렌더기록이 비워져
       // 대상 페이지가 윈도우 밖이면 재 enqueue 되지 않아 폴링이 타임아웃되던 엣지(canvas LRU
       // 도입으로 노출). 매 틱 멱등 재요청해 큐가 비워져도 대상 렌더를 복구한다.
-      enqueueRenderRef.current?.(targetPage);
+      enqueueRenderRef.current?.(targetPage, true);
       if (renderedPagesRef.current.has(targetPage)) {
         clearInterval(interval);
         scrollToPage();
