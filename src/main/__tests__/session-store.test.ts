@@ -4,6 +4,7 @@ import {
   type SessionManifestEntry,
   type SessionSaveMeta,
 } from '../../shared/session-types';
+import { MAX_SUMMARY_TYPE_LEN, MAX_TEMPLATE_ID_LEN } from '../../shared/constants';
 
 // session-persistence module-2 (L2): session-store 파일 I/O·LRU·검증.
 // fs/promises 를 in-memory 가상 파일시스템으로 모킹해 원자적 쓰기·매니페스트·LRU·삭제를 행위 검증.
@@ -442,6 +443,65 @@ describe('patchSession (부분저장 IPC, Tier3)', () => {
     expect(after!.blob!.byteLength).toBe(blob.byteLength);
     expect(sess.summaries.full!.content).toBe('새요약'); // 요약 갱신
     expect(sess.qaMessages).toHaveLength(1);            // qa 갱신
+  });
+
+  // QA22(백로그): 커스텀 템플릿 요약 키는 `custom:<id>` 라 최대 71자(7 + id 64)인데 세 경로가
+  // 전부 64 로 판정했다. patchSession 은 키를 **잘라서** 저장했으므로 렌더러가 원본 키로 조회하는
+  // 다음 복원에서 요약이 사라진다(저장은 ok:true — 조용한 소실).
+  it('최대 길이 custom 키(71자)가 절단 없이 왕복한다', async () => {
+    const h = hashOf(13);
+    const key = `custom:${'a'.repeat(MAX_TEMPLATE_ID_LEN)}`;
+    expect(key.length).toBe(MAX_SUMMARY_TYPE_LEN);
+    await writeSession(DIR, {
+      meta: metaOf(h),
+      session: { docHash: h, summaries: {}, summaryType: 'full', qaMessages: [] },
+      blob: null, now: 1000,
+    });
+    const r = await patchSession(DIR, {
+      docHash: h,
+      summary: { type: key, content: '커스텀 요약', model: 'm', provider: 'ollama' },
+      summaryType: key,
+      qaMessages: [],
+      now: 2000,
+    });
+    expect(r.ok).toBe(true);
+    const sess = (await readSession(DIR, h))!.session as { summaries: Record<string, { content: string }>; summaryType: string };
+    expect(Object.keys(sess.summaries)).toEqual([key]);   // 잘린 키가 아니라 원본 키
+    expect(sess.summaries[key]!.content).toBe('커스텀 요약');
+    expect(sess.summaryType).toBe(key);                    // 활성 유형도 유지(옛 값 고착 없음)
+  });
+
+  it('상한 초과 키는 잘라 저장하지 않고 요약 델타만 skip', async () => {
+    const h = hashOf(14);
+    await writeSession(DIR, {
+      meta: metaOf(h),
+      session: { docHash: h, summaries: { full: { content: 'F', model: 'm', provider: 'ollama' } }, summaryType: 'full', qaMessages: [] },
+      blob: null, now: 1000,
+    });
+    const tooLong = `custom:${'a'.repeat(MAX_TEMPLATE_ID_LEN + 10)}`;
+    await patchSession(DIR, {
+      docHash: h,
+      summary: { type: tooLong, content: 'X', model: 'm', provider: 'ollama' },
+      summaryType: 'full',
+      qaMessages: [{ id: 'q', role: 'user', content: '질문' }],
+      now: 2000,
+    });
+    const sess = (await readSession(DIR, h))!.session as { summaries: Record<string, unknown>; qaMessages: unknown[] };
+    expect(Object.keys(sess.summaries)).toEqual(['full']);  // 절단 키가 새로 생기지 않는다
+    expect(sess.qaMessages).toHaveLength(1);                // 나머지 델타는 정상 반영
+  });
+
+  it('mergeSessionSummary 도 71자 custom 키를 수용한다 (컬렉션 인라인 요약)', async () => {
+    const h = hashOf(15);
+    const key = `custom:${'b'.repeat(MAX_TEMPLATE_ID_LEN)}`;
+    await writeSession(DIR, {
+      meta: metaOf(h),
+      session: { docHash: h, summaries: {}, qaMessages: [] },
+      blob: null, now: 1000,
+    });
+    expect(await mergeSessionSummary(DIR, h, key, { content: 'C', model: 'm', provider: 'ollama' }, 2000)).toEqual({ ok: true });
+    const sess = (await readSession(DIR, h))!.session as { summaries: Record<string, { content: string }> };
+    expect(sess.summaries[key]!.content).toBe('C');
   });
 
   it('다른 타입 요약은 보존하고 해당 타입만 교체', async () => {

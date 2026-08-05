@@ -10,6 +10,7 @@ import {
   type SessionSaveMeta,
   type SessionStats,
 } from '../shared/session-types';
+import { MAX_SUMMARY_TYPE_LEN } from '../shared/constants';
 
 /**
  * 세션 영속화 — 순수 파일 I/O 헬퍼 (settings-store / api-keys-store 와 동일 패턴).
@@ -485,7 +486,8 @@ export async function mergeSessionSummary(
   now: number,
 ): Promise<{ ok: boolean }> {
   if (!isValidDocHash(docHash)) return { ok: false };
-  if (typeof type !== 'string' || type.length === 0 || type.length > 64) return { ok: false };
+  // `custom:<id>` 키(최대 71자)를 64 로 판정해 컬렉션 인라인 요약이 저장되지 않던 문제 — 상한 공유.
+  if (typeof type !== 'string' || type.length === 0 || type.length > MAX_SUMMARY_TYPE_LEN) return { ok: false };
   if (!summary || typeof summary.content !== 'string' || summary.content.trim().length === 0) {
     return { ok: false };
   }
@@ -572,19 +574,22 @@ export async function patchSession(
       return { ok: false }; // 디스크 세션 부재/손상 → 호출자가 전체 저장으로 폴백
     }
     // summary delta — 해당 타입 한 칸만 교체(다른 타입 보존). mergeSessionSummary 와 동일 정규화.
+    // 키 절단 금지: 잘린 키로 저장하면 렌더러가 원본 키로 조회하므로 "저장 성공 + 복원 시 부재"
+    // 라는 조용한 소실이 된다. 상한 초과는 정상 경로에서 도달 불가한 malformed 이므로 이 델타만 skip.
     if (summary && typeof summary.type === 'string' && summary.type.length > 0
+        && summary.type.length <= MAX_SUMMARY_TYPE_LEN
         && typeof summary.content === 'string' && summary.content.trim().length > 0) {
       const summaries = (session.summaries && typeof session.summaries === 'object')
         ? session.summaries as Record<string, unknown>
         : {};
-      summaries[summary.type.slice(0, 64)] = {
+      summaries[summary.type] = {
         content: summary.content,
         model: typeof summary.model === 'string' ? summary.model.slice(0, 128) : '',
         provider: typeof summary.provider === 'string' ? summary.provider.slice(0, 64) : '',
       };
       session.summaries = summaries;
     }
-    if (typeof summaryType === 'string' && summaryType.length > 0 && summaryType.length <= 64) {
+    if (typeof summaryType === 'string' && summaryType.length > 0 && summaryType.length <= MAX_SUMMARY_TYPE_LEN) {
       session.summaryType = summaryType;
     }
     if (Array.isArray(qaMessages)) session.qaMessages = qaMessages;

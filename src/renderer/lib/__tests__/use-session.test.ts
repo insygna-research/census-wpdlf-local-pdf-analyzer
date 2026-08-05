@@ -856,6 +856,56 @@ describe('R41 fixes', () => {
     expect(s.summaryType).toBe('full');
   });
 
+  // QA22(백로그): 삭제된 커스텀 템플릿의 요약(`custom:<없는 id>`)이 그대로 복원돼 활성 유형이
+  // 존재하지 않는 값이 됐고, SummaryTypeSelector 폴백이 곧바로 'full' 로 되돌려 **라벨↔본문 불일치**
+  // (위 R41 High 가 없앤 바로 그 조합)가 남았다. fallback 은 summaries 의 첫 항목을 집으므로
+  // 고아 하나가 정상 요약을 가릴 수도 있었다.
+  it('QA22: 삭제된 템플릿의 custom 요약은 복원하지 않고, 살아있는 요약을 채택한다', async () => {
+    const doc = makeDoc();
+    useAppStore.setState({
+      document: doc, sessionRestorePending: true,
+      settings: { ...useAppStore.getState().settings, customSummaryTemplates: [] }, // 템플릿 전부 삭제된 상태
+    });
+    api.session.load.mockImplementation(async (hash: string) => {
+      const f = persistedSession(doc, false);
+      f.session.docHash = hash;
+      // 고아 요약이 **첫 항목**(fallback 이 먼저 집는 자리)
+      f.session.summaries = {
+        'custom:gone': { content: '삭제된 템플릿 본문', model: 'm', provider: 'ollama' },
+        full: { content: 'FULL 본문', model: 'm', provider: 'ollama' },
+      };
+      f.session.summaryType = 'custom:gone';
+      return f;
+    });
+    await restoreSessionForDocument(doc);
+    const s = useAppStore.getState();
+    expect(s.summary?.content).toBe('FULL 본문');
+    expect(s.summary?.type).toBe('full');
+    expect(s.summaryType).toBe('full');
+  });
+
+  it('QA22: 살아있는 템플릿의 custom 요약은 정상 복원된다 (과잉 차단 방지)', async () => {
+    const doc = makeDoc();
+    useAppStore.setState({
+      document: doc, sessionRestorePending: true,
+      settings: {
+        ...useAppStore.getState().settings,
+        customSummaryTemplates: [{ id: 'keep', name: '액션아이템', prompt: '추출하라', strategy: 'single' }],
+      },
+    });
+    api.session.load.mockImplementation(async (hash: string) => {
+      const f = persistedSession(doc, false);
+      f.session.docHash = hash;
+      f.session.summaries = { 'custom:keep': { content: '커스텀 본문', model: 'm', provider: 'ollama' } };
+      f.session.summaryType = 'custom:keep';
+      return f;
+    });
+    await restoreSessionForDocument(doc);
+    const s = useAppStore.getState();
+    expect(s.summary?.content).toBe('커스텀 본문');
+    expect(s.summaryType).toBe('custom:keep');
+  });
+
   it('#3: load↔checkEmbedModel 사이 provider 변경 시 마커에 최신 provider 반영', async () => {
     const doc = makeDoc();
     useAppStore.setState({ document: doc, sessionRestorePending: true, settings: { ...useAppStore.getState().settings, provider: 'ollama' } });

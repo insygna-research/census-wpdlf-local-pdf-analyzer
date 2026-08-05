@@ -74,6 +74,38 @@ describe('CollectionsList', () => {
     expect(M.openCollection).toHaveBeenCalledWith(['c1-0', 'c1-1', 'c1-2']);
   });
 
+  // QA22(백로그): 연 컬렉션의 출처를 기록해야 CollectionBar 의 재저장이 신규 항목이 아니라
+  // 갱신이 된다(동명 누적 방지). 부분 복원도 소속은 동일하고, 전원 실패면 기록하지 않는다.
+  it('열기 성공 → collection.saved 에 원본 {id,name} 기록', async () => {
+    useAppStore.setState({ collection: { enabled: false, memberHashes: [] } });
+    const user = userEvent.setup();
+    render(<CollectionsList />);
+    await waitFor(() => expect(screen.getByText(/강의 묶음/)).toBeTruthy());
+    await user.click(screen.getByRole('button', { name: '열기' }));
+    await waitFor(() => expect(useAppStore.getState().collection.saved).toEqual({ id: 'c1', name: '강의 묶음' }));
+  });
+
+  it('전원 복원 실패(opened 0) 면 소속을 기록하지 않는다', async () => {
+    M.openCollection.mockResolvedValue({ opened: 0, total: 2 });
+    useAppStore.setState({ collection: { enabled: false, memberHashes: [] } });
+    const user = userEvent.setup();
+    render(<CollectionsList />);
+    await waitFor(() => expect(screen.getByText(/강의 묶음/)).toBeTruthy());
+    await user.click(screen.getByRole('button', { name: '열기' }));
+    await waitFor(() => expect(useAppStore.getState().error?.code).toBe('COLLECTION_OPEN_FAIL'));
+    expect(useAppStore.getState().collection.saved).toBeUndefined();
+  });
+
+  it('열려 있던 컬렉션을 삭제하면 소속이 끊긴다 (이후 저장은 신규)', async () => {
+    useAppStore.setState({ collection: { enabled: true, memberHashes: [], saved: { id: 'c1', name: '강의 묶음' } } });
+    const user = userEvent.setup();
+    render(<CollectionsList />);
+    await waitFor(() => expect(screen.getByText(/강의 묶음/)).toBeTruthy());
+    M.list.mockResolvedValue([]);
+    await user.click(screen.getByRole('button', { name: '삭제' }));
+    await waitFor(() => expect(useAppStore.getState().collection.saved).toBeUndefined());
+  });
+
   it('R48: 생성/분석 중이면 열기 차단 + busy 안내(openCollection 미호출)', async () => {
     M.blocked.mockReturnValue(true);
     const user = userEvent.setup();

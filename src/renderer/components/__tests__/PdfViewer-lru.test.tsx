@@ -113,6 +113,41 @@ describe('PdfViewer LRU 윈도잉', () => {
     await waitFor(() => expect(w1.querySelector('canvas')).toBeTruthy());
   });
 
+  // QA22(백로그): 렌더 effect 의 진입 정리 루프가 width/height 는 지우면서 **evict 가 박은
+  // minHeight 만 남겼다**. 이 루프가 도는 두 경우(패널 리사이즈로 renderVersion↑, 새 문서 로드)
+  // 모두 React 가 wrapper DOM 을 재사용하므로, 해제 상태였던 슬롯이 **이전 상태의 높이**를 유지한다
+  // → 새 scale/새 문서에서 빈 여백이 남고 스크롤 총길이·인용 점프 오프셋이 어긋난다.
+  it('렌더 effect 재실행 시 evict 가 남긴 minHeight 가 초기화된다 (stale 높이 고착 방지)', async () => {
+    const { wrappers, rerender, container } = await renderAll(2);
+    const evictIO = findIO('200% 0px')!;
+    const w1 = wrappers[0]!;
+
+    trigger(evictIO, [{ target: w1, isIntersecting: false }]);
+    expect(w1.style.minHeight).not.toBe(''); // 해제되며 높이 보존됨
+
+    // 해제된 페이지가 **재렌더되지 않는** 상황을 만든다 — 재렌더 경로(L341)도 minHeight 를 지우므로
+    // 그대로 두면 정리 루프를 떼어내도 통과하는 공허한 테스트가 된다(실제로 뮤테이션이 통과했다).
+    const origRect = Element.prototype.getBoundingClientRect;
+    Element.prototype.getBoundingClientRect = function (this: Element): DOMRect {
+      const idx = (this as HTMLElement).dataset?.pageIndex;
+      const top = idx !== undefined ? (Number(idx) + 1) * 5000 : 0; // 모든 페이지가 윈도우(±2) 밖
+      return { top, bottom: top + 480, height: idx !== undefined ? 480 : 500, left: 0, right: 360, width: 360, x: 0, y: top, toJSON: () => ({}) } as DOMRect;
+    };
+    try {
+      // 다른 문서 로드(페이지 수 3→4) — 앞 3개 wrapper 는 재사용되고 렌더 effect 가 재실행된다
+      P.getDocument.mockReturnValue({ promise: Promise.resolve(P.makeDoc(4)), destroy: vi.fn(() => Promise.resolve()) });
+      rerender(<PdfViewer pdfBytes={new Uint8Array([9, 9, 9])} targetPage={2} onClose={vi.fn()} />);
+      await waitFor(() => expect(container.querySelectorAll('[data-page-index]').length).toBe(4));
+
+      // 같은 DOM 노드가 재사용되는지 먼저 확인 — 새로 마운트된 노드라면 이 검증이 공허해진다.
+      expect(container.querySelectorAll('[data-page-index]')[0]).toBe(w1);
+      expect(w1.querySelector('canvas')).toBeNull();  // 재렌더 경로를 타지 않았음(= 정리 루프만이 지울 수 있다)
+      expect(w1.style.minHeight).toBe('');
+    } finally {
+      Element.prototype.getBoundingClientRect = origRect;
+    }
+  });
+
   // QA(메모리): 큐 적재 후 ±2 윈도우 밖으로 나간 비-대상 페이지는 pump 가 getPage 전에 skip.
   it('윈도우 밖(±2) 비-대상 페이지는 렌더 skip, 대상 페이지는 예외로 렌더', async () => {
     // getBoundingClientRect stub: 컨테이너=뷰포트(0~500,h500), 페이지 i=top i*5000(±2=1000 밖)

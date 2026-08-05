@@ -161,9 +161,12 @@ export default defineConfig({
       //   게이트가 cycle5(80/72/80/83)에 고정돼 다시 6~7pp 뒤처져(-5pp 정책 위반) 약 2pp 회귀가
       //   무감지 통과 가능했다. 정책대로 재정렬.
       //   측정: Stmts 86.41 / Branch 78.52 / Funcs 86.53 / Lines 89.86 (-5pp 마진 적용 → 아래).
+      // QA22 백로그 정리: 사이클 14~22 보강으로 branch 베이스라인이 다시 올라 게이트가 −6.4pp 로
+      //   벌어져 있었다(정책은 −5pp). 나머지 셋은 floor(측정−5) 가 현행값과 같아 유지, branch 만 상향.
+      //   측정: Stmts 86.63 / Branch 79.43 / Funcs 86.38 / Lines 89.92 (-5pp 마진 적용 → 아래).
       thresholds: {
         statements: 81,
-        branches: 73,
+        branches: 74,
         functions: 81,
         lines: 84,
       },

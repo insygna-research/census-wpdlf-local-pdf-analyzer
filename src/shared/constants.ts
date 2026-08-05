@@ -11,6 +11,24 @@
 /** PDF 업로드 최대 크기 (bytes). Main 의 drop/open 검증, Renderer 의 업로더 가드에 공유. */
 export const MAX_PDF_SIZE_BYTES = 100 * 1024 * 1024; // 100MB
 
+/** 커스텀 요약 템플릿 id 상한 — settings 검증(main)과 아래 요약 키 상한이 함께 파생된다. */
+export const MAX_TEMPLATE_ID_LEN = 64;
+
+/**
+ * 세션 `summaries` 의 키(= 요약 유형) 최대 길이.
+ *
+ * QA22(백로그): 커스텀 템플릿의 요약 키는 `custom:<id>` 라서 **접두사 7자 + id 상한 64자 = 71자**
+ * 까지 정당한데, session-store 의 세 경로가 전부 64 로 잘라 판정하고 있었고 그 처리도 제각각이었다:
+ *   1) mergeSessionSummary  — 64 초과면 {ok:false} (컬렉션 인라인 요약이 영영 저장 안 됨)
+ *   2) patchSession 의 summary — `.slice(0, 64)` 로 **키를 잘라 저장**(렌더러는 원본 키로 조회하므로
+ *      저장은 성공했는데 다음 복원에서 못 찾는 조용한 소실 — 컬렉션 id 절단과 같은 계열)
+ *   3) patchSession 의 summaryType — 64 초과면 무시(활성 유형이 옛 값으로 복원)
+ * 정상 경로의 id 는 randomUUID(36자)라 키가 43자지만, settings 검증은 id 를 64자까지 허용하므로
+ * 수기 편집·이관된 settings.json 이면 도달한다. 상한을 접두사 포함으로 올리고 **세 경로가 같은
+ * 값으로 판정**하게 해 절단(키 drift)을 없앤다.
+ */
+export const MAX_SUMMARY_TYPE_LEN = 'custom:'.length + MAX_TEMPLATE_ID_LEN; // 71
+
 /**
  * Ollama / 로컬 HTTP 엔드포인트 SSRF 방어용 허용 호스트.
  *

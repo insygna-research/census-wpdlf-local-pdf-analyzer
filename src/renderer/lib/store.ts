@@ -243,6 +243,7 @@ interface AppState {
   setCollectionEnabled: (enabled: boolean) => void;
   /** 질의 대상 멤버 docHash 목록 교체 */
   setCollectionMembers: (memberHashes: string[]) => void;
+  setSavedCollection: (saved: { id: string; name: string } | null) => void;
   /** 단일 멤버 포함/제외 토글 (체크박스) */
   toggleCollectionMember: (docHash: string) => void;
   // 교차 요약 "준비(gather) 단계" 표식 — generateCollectionSummary 가 setIsQaGenerating(true) 를
@@ -434,6 +435,7 @@ export const useAppStore = create<AppState>((set) => ({
     // (탭 전환/+ 새 탭은 openTabs 가 줄지 않으므로 컬렉션 상태 유지)
     const candidateCount = openTabs.filter((t) => t.docHash).length;
     if (candidateCount < 2 && (collection.enabled || collection.memberHashes.length > 0)) {
+      // saved 도 함께 버린다 — 복원된 세트가 해체된 뒤의 저장은 "그 컬렉션의 갱신"이 아니다.
       collection = { enabled: false, memberHashes: [] };
     }
     return { openTabs, collection };
@@ -446,6 +448,10 @@ export const useAppStore = create<AppState>((set) => ({
   })),
   setCollectionMembers: (memberHashes) => set((s) => ({
     collection: { ...s.collection, memberHashes },
+  })),
+  // 저장된 컬렉션에서 탭 세트를 복원했을 때만 설정(재저장이 신규 항목이 아니라 갱신이 되도록).
+  setSavedCollection: (saved) => set((s) => ({
+    collection: saved ? { ...s.collection, saved } : { ...s.collection, saved: undefined },
   })),
   toggleCollectionMember: (docHash) => set((s) => {
     const has = s.collection.memberHashes.includes(docHash);

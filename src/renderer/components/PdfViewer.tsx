@@ -257,6 +257,13 @@ export function PdfViewer({ pdfBytes, targetPage, jumpNonce = 0, onClose }: PdfV
         // 다음 렌더에서 새 scale 의 실제 높이로 다시 박힘.
         wrapper.style.width = '';
         wrapper.style.height = '';
+        // QA22(백로그): evictPage 가 박아둔 minHeight 를 **여기서만 안 지웠다**. width/height 는
+        // 지우면서 minHeight 를 남기면, 이 effect 가 도는 두 경우 모두 이전 상태의 높이가 고착된다:
+        //  - 패널 리사이즈(renderVersion++): 새 scale 로 다시 그릴 슬롯이 옛 scale 높이를 유지 →
+        //    폭을 크게 줄여도 빈 여백이 남고 스크롤 총길이·인용 점프 오프셋이 어긋난다
+        //  - 같은 페이지 수의 다른 문서 로드: React 가 wrapper DOM 을 재사용하므로 **이전 문서**의
+        //    페이지 높이가 새 문서 placeholder 에 남는다(L246 canvas 재사용 회귀와 동형)
+        wrapper.style.minHeight = '';
       }
     }
     renderedPagesRef.current.clear();

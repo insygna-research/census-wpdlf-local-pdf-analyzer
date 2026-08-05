@@ -139,6 +139,41 @@ describe('CollectionBar 동작', () => {
     expect(useAppStore.getState().notice).not.toBeNull(); // 저장 안내
   });
 
+  // QA22(백로그): 저장 경로가 항상 id 없이 호출해 저장된 컬렉션을 열고 다시 저장할 때마다
+  // main 이 새 randomUUID 를 발급했다 → 목록에 동명 항목이 쌓이고(구분 불가) 개수 상한의 LRU 가
+  // 무관한 컬렉션을 밀어낸다.
+  it('저장된 컬렉션을 같은 이름으로 재저장하면 그 id 로 갱신한다', async () => {
+    mockSaveCollection.mockClear();
+    useAppStore.setState({
+      collection: { enabled: true, memberHashes: ['a'.repeat(64), 'b'.repeat(64)], saved: { id: 'col-1', name: '나의 묶음' } },
+    });
+    const user = userEvent.setup();
+    render(<CollectionBar />);
+    await user.click(await screen.findByRole('button', { name: /컬렉션 저장/ }));
+    // 기본 이름이 저장된 컬렉션 이름으로 채워진다(그대로 저장 = 갱신 경로)
+    const input = screen.getByPlaceholderText('컬렉션 이름') as HTMLInputElement;
+    expect(input.value).toBe('나의 묶음');
+    await user.click(screen.getByRole('button', { name: '저장' }));
+    expect(mockSaveCollection).toHaveBeenCalledWith(expect.objectContaining({ id: 'col-1', name: '나의 묶음' }));
+  });
+
+  it('이름을 바꿔 저장하면 신규 항목(id 미전달) — "다른 이름으로 저장" 을 덮어쓰기로 오해하지 않는다', async () => {
+    mockSaveCollection.mockClear();
+    useAppStore.setState({
+      collection: { enabled: true, memberHashes: ['a'.repeat(64), 'b'.repeat(64)], saved: { id: 'col-1', name: '나의 묶음' } },
+    });
+    const user = userEvent.setup();
+    render(<CollectionBar />);
+    await user.click(await screen.findByRole('button', { name: /컬렉션 저장/ }));
+    const input = screen.getByPlaceholderText('컬렉션 이름');
+    await user.clear(input);
+    await user.type(input, '다른 묶음');
+    await user.click(screen.getByRole('button', { name: '저장' }));
+    expect(mockSaveCollection).toHaveBeenCalledWith(expect.not.objectContaining({ id: expect.anything() }));
+    // 신규 저장 후에는 발급된 id 로 소속이 갱신돼 다음 재저장이 다시 갱신 경로를 탄다
+    await waitFor(() => expect(useAppStore.getState().collection.saved).toEqual({ id: 'new', name: '다른 묶음' }));
+  });
+
   it('활성 문서에 "현재" 배지', async () => {
     useAppStore.setState({ collection: { enabled: true, memberHashes: ['a'.repeat(64), 'b'.repeat(64)] } });
     render(<CollectionBar />);

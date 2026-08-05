@@ -1,4 +1,4 @@
-import { isValidOllamaUrl } from '../shared/constants';
+import { isValidOllamaUrl, MAX_TEMPLATE_ID_LEN } from '../shared/constants';
 
 /**
  * 설정 값 검증 — **쓰기(settings:set)와 읽기(loadSettings)가 공유하는 단일 출처**.
@@ -65,14 +65,15 @@ export function validateSettingValue(key: string, val: unknown): SettingsValidat
         .filter((it): it is { id: string; name: string; prompt: string; strategy?: unknown } => {
           if (!it || typeof it !== 'object') return false;
           const o = it as Record<string, unknown>;
-          return typeof o.id === 'string' && o.id.length > 0 && o.id.length <= 64
+          // id 상한은 shared 단일 출처 — 세션 요약 키(`custom:<id>`) 상한이 여기서 파생된다.
+          return typeof o.id === 'string' && o.id.length > 0 && o.id.length <= MAX_TEMPLATE_ID_LEN
             && typeof o.name === 'string' && o.name.trim().length > 0
             && typeof o.prompt === 'string' && o.prompt.trim().length > 0;
         })
         .slice(0, 20)
         // strategy 는 'chunked' 만 유효, 그 외(미지정/오값)는 'single' 로 정규화(하위호환).
         .map((it) => ({
-          id: it.id.slice(0, 64),
+          id: it.id.slice(0, MAX_TEMPLATE_ID_LEN),
           name: it.name.slice(0, 60),
           prompt: it.prompt.slice(0, 4000),
           strategy: it.strategy === 'chunked' ? 'chunked' : 'single',

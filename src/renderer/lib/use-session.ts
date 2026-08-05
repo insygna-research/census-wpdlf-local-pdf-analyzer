@@ -81,10 +81,23 @@ export async function restoreSessionForDocument(doc: PdfDocument): Promise<void>
     // 라벨링해야 한다. 이전엔 라벨을 session.summaryType 로 고정해 "keywords 탭인데 full 본문"
     // 불일치가 발생했고, 그 stale 조합이 자동저장으로 흘러가 summaries[summaryType]=다른본문 으로
     // 디스크 세션을 손상시켰다.
+    // QA22(백로그): 삭제된 커스텀 템플릿의 요약(`custom:<없는 id>`)은 복원 대상에서 제외한다.
+    // 이전엔 그 키가 그대로 복원돼 activeSummaryType 이 존재하지 않는 유형이 됐고, 곧바로
+    // SummaryTypeSelector 의 폴백이 'full' 로 되돌려 **"full 탭인데 커스텀 본문"** 조합이 남았다
+    // (R41 이 없앴던 라벨↔본문 불일치의 재현 — 그 stale 조합은 자동저장으로도 흘러간다).
+    // 특히 fallback 은 summaries 의 **첫 항목**을 집으므로 고아 요약 하나가 정상 요약을 가릴 수 있다.
+    // 디스크의 고아 요약 자체는 지우지 않는다(사용자가 만든 산출물이고, 용량은 세션 LRU 가 관리).
+    const activeTemplates = useAppStore.getState().settings.customSummaryTemplates ?? [];
+    const isRestorableType = (type: string): boolean =>
+      !type.startsWith('custom:')
+      || activeTemplates.some((tpl) => `custom:${tpl.id}` === type && tpl.name.trim() && tpl.prompt.trim());
+
     let restoredType = session.summaryType;
-    let persistedSummary = session.summaries?.[session.summaryType];
+    let persistedSummary = isRestorableType(session.summaryType)
+      ? session.summaries?.[session.summaryType]
+      : undefined;
     if (!persistedSummary) {
-      const firstEntry = Object.entries(session.summaries ?? {})[0];
+      const firstEntry = Object.entries(session.summaries ?? {}).find(([type]) => isRestorableType(type));
       if (firstEntry) {
         restoredType = firstEntry[0] as ActiveSummaryType;
         persistedSummary = firstEntry[1];

@@ -94,7 +94,10 @@ export function CollectionBar() {
     .filter((c) => c.docHash === activeDocHash || collection.memberHashes.includes(c.docHash as string))
     .map((c) => c.docHash as string);
   // 기본 이름은 활성 문서명 우선(없으면 첫 멤버) — 활성 강제 포함 정책과 명명 직관 일치(R47)
-  const defaultName = activeTab?.fileName
+  // 저장된 컬렉션에서 연 세트면 그 이름을 기본값으로 — 사용자가 그대로 저장하면 갱신 경로를 탄다
+  // (이름을 지우고 새로 쓰면 신규 저장). 그렇지 않으면 종전대로 활성 문서명 우선.
+  const defaultName = collection.saved?.name
+    ?? activeTab?.fileName
     ?? candidates.find((c) => c.docHash === memberHashesToSave[0])?.fileName
     ?? candidates[0]?.fileName ?? '';
 
@@ -102,8 +105,14 @@ export function CollectionBar() {
     const name = saveName.trim();
     if (!name || memberHashesToSave.length < 2) return;
     setSaving(false);
-    const r = await saveCollection({ name, docHashes: memberHashesToSave });
+    // 저장된 컬렉션에서 연 세트를 **같은 이름으로** 다시 저장하면 그 항목의 갱신(id 재사용).
+    // 이름을 바꿨다면 "다른 이름으로 저장" 의도이므로 id 를 넘기지 않아 신규 항목이 된다.
+    const savedRef = collection.saved;
+    const reuseId = savedRef && savedRef.name === name ? savedRef.id : undefined;
+    const r = await saveCollection({ name, docHashes: memberHashesToSave, ...(reuseId ? { id: reuseId } : {}) });
     if (r.ok) {
+      // 신규 저장이었다면 이후 재저장도 갱신이 되도록 방금 발급된 id 로 소속을 기록.
+      if (r.id) useAppStore.getState().setSavedCollection({ id: r.id, name });
       useAppStore.getState().setNotice({ message: t('collection.saved') });
     } else {
       // 실패는 setError(닫기 전까지 잔존)로 통일 — notice(자동소멸)면 놓치기 쉬움(R47)

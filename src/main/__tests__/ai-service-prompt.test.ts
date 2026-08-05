@@ -14,6 +14,7 @@ import {
   detectMimeType,
   sanitizeVisionResponse,
   sanitizeOcrResponse,
+  OCR_MAX_CHARS,
   checkEmbeddingAvailability,
   geminiModelUrl,
   GEMINI_EMBED_MODEL,
@@ -66,8 +67,22 @@ describe('sanitizeOcrResponse', () => {
     expect(sanitizeOcrResponse('text https://x.com more')).toBe('text  more');
   });
 
-  it('4000자로 절단 (Vision 보다 완화)', () => {
-    expect(sanitizeOcrResponse('a'.repeat(5000)).length).toBe(4000);
+  // QA22(백로그): 이전 상한 4000자는 **모델 출력 예산(maxTokens 2000)보다 작았다** — 영문/혼합
+  // 페이지는 토큰당 ~4자라 정상 응답이 8000자까지 나올 수 있어, 2단 조판·표가 많은 페이지의
+  // 뒤쪽이 무음으로 잘린 채 요약·인용·검색에 들어갔다.
+  it('모델이 정당하게 낼 수 있는 길이(8000자)는 자르지 않는다', () => {
+    expect(sanitizeOcrResponse('a'.repeat(8000)).length).toBe(8000);
+  });
+
+  it('폭주 응답은 상한에서 자르되 잘린 사실을 마커로 남긴다', () => {
+    const out = sanitizeOcrResponse('a'.repeat(OCR_MAX_CHARS + 500));
+    expect(out.length).toBe(OCR_MAX_CHARS + '\n\n[...]'.length);
+    expect(out.endsWith('[...]')).toBe(true);
+  });
+
+  it('상한 이하는 마커를 붙이지 않는다 (경계)', () => {
+    const out = sanitizeOcrResponse('a'.repeat(OCR_MAX_CHARS));
+    expect(out).toBe('a'.repeat(OCR_MAX_CHARS));
   });
 });
 

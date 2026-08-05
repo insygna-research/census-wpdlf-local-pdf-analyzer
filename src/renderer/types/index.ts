@@ -292,6 +292,16 @@ export interface OpenTab {
 export interface CollectionState {
   enabled: boolean;       // 컬렉션 Q&A 모드 on/off (기본 off — 단일 문서 Q&A 보존)
   memberHashes: string[]; // 질의 대상 docHash 부분집합
+  /**
+   * 지금 열려 있는 탭 세트가 **저장된 컬렉션에서 복원된 것**이면 그 원본 {id, name}.
+   *
+   * QA22(백로그): 저장 경로가 항상 id 없이 호출해 main 이 매번 randomUUID 를 발급했다. 저장된
+   * 컬렉션을 열고 문서를 하나 더해 같은 이름으로 다시 저장하면 갱신이 아니라 **동명 항목이 하나 더
+   * 쌓이고**(목록에서 구분 불가) 개수 상한(COLLECTION_MAX_COUNT)의 LRU 축출이 무관한 컬렉션을
+   * 밀어낸다. 이름이 그대로면 이 id 로 upsert 하고, 이름을 바꿔 저장하면 신규로 둔다(= "다른 이름으로
+   * 저장" 의도를 덮어쓰기로 오해하지 않는다).
+   */
+  saved?: { id: string; name: string };
 }
 
 /** 멤버 동질성 게이트 산출 — 검색 가능 여부와 사유를 UI 배지로 표시 */

@@ -43,7 +43,12 @@ export function CollectionsList() {
       const { opened, total } = await openCollection(c.docHashes);
       if (opened === 0) {
         useAppStore.getState().setError({ code: 'COLLECTION_OPEN_FAIL', message: tr('collection.openFail') });
-      } else if (opened < total) {
+      } else {
+        // 복원된 탭 세트의 출처를 기록 — 같은 이름으로 재저장하면 신규 항목이 아니라 이 id 의 갱신이
+        // 된다(동명 누적·무관 컬렉션 LRU 축출 방지). 부분 복원(opened<total)도 소속은 동일하다.
+        useAppStore.getState().setSavedCollection({ id: c.id, name: c.name });
+      }
+      if (opened > 0 && opened < total) {
         // 부분 복원 — 안내(컬렉션 항목은 유지). 성공 멤버는 이미 탭으로 열렸으므로 notice 채널 사용.
         useAppStore.getState().setNotice({ message: tr('collection.partialOpen', { opened, total }) });
       }
@@ -54,6 +59,10 @@ export function CollectionsList() {
 
   const handleDelete = useCallback(async (id: string) => {
     await deleteCollection(id);
+    // 삭제된 항목이 지금 열려 있는 세트의 출처였다면 소속을 끊는다 — 이후 저장은 신규 항목이어야 한다.
+    if (useAppStore.getState().collection.saved?.id === id) {
+      useAppStore.getState().setSavedCollection(null);
+    }
     void refresh();
   }, [refresh]);
 
