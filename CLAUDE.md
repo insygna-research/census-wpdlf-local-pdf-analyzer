@@ -3,7 +3,7 @@
 ## Project Overview
 
 PDF 자료 분석 데스크톱 앱 (Electron + React + TypeScript)
-Ollama/Claude/OpenAI를 통한 AI 요약, PDF 이미지 Vision 분석 지원
+Ollama/Claude/OpenAI/Gemini를 통한 AI 요약, PDF 이미지 Vision 분석 지원
 
 ## Build & Package
 
@@ -43,11 +43,13 @@ NSIS 인스톨러가 "알 수 없는 게시자" SmartScreen 경고와 함께 배
 
 ## Tech Stack
 
-- Electron 41 + electron-vite 3
-- React 19 + TypeScript 5 + Tailwind CSS 4
+- Electron 43 + electron-vite 5 (vite 7)
+- React 19 + TypeScript 7 + Tailwind CSS 4
 - Zustand 5 (상태 관리)
-- pdfjs-dist 4 (PDF 파싱 + 이미지 추출 + OCR fallback)
-- AI: Ollama (로컬), Claude API, OpenAI API
-- Vision: llava/Claude/GPT-4o 로 이미지·수식·차트 분석
-- RAG: 임베딩 기반 시맨틱 검색 (nomic-embed-text / text-embedding-3-small)
+- pdfjs-dist 6 (PDF 파싱 + 이미지 추출 + OCR fallback)
+- AI: Ollama (로컬), Claude API, OpenAI API, Google Gemini API
+- Vision: llava/Claude/GPT-4o/Gemini 로 이미지·수식·차트 분석
+- RAG: 임베딩 기반 시맨틱 검색 (nomic-embed-text / text-embedding-3-small / gemini-embedding-2)
+- 자동 업데이트: electron-updater (GitHub Releases 피드, 확인만 자동·다운로드/설치는 승인 후)
+- 테스트: Vitest (유닛) + Playwright (E2E, 패키징 앱 스모크 포함)
 - 다국어 UI: 한국어/영어 (store 기반 i18n)

@@ -90,11 +90,11 @@ gh attestation verify ./Local-PDF-Analyzer-Setup-x.x.x.exe --repo wpdlf/local-pd
 - Closing the summary is non-destructive — it collapses to the document screen, and **View summary / Continue Q&A** reopens it with the Q&A thread intact
 
 ### 4. Q&A Chat (RAG Semantic Search)
-- A **RAG vector index** is built automatically when a PDF loads (progress in the header → **RAG** badge when ready)
+- A **RAG vector index** is built automatically when a PDF loads (progress in the header → **RAG** badge when ready). If the index no longer matches the embedding model in use — after installing or removing an Ollama embedding model while the app is open — the header reports it instead of quietly falling back to keyword search behind a green badge
 - Ask a question and the AI answers using the most relevant parts of the PDF found via embedding similarity (up to 10 turns of conversation context)
 - Without an embedding model, Q&A falls back to keyword search automatically (same feature, lower accuracy)
 - **Automatic answer verification** — each sentence of the answer is checked against the PDF embeddings; if too many sentences lack grounding, the answer is automatically refined once more (can be disabled in Settings)
-- **Cross-document Q&A (collection mode)** — with two or more documents open, toggle **"Ask across documents"** to search several PDFs at once. Pick members with checkboxes; the question is searched across each selected document's index and merged **without re-embedding**. Answers cite the source document (e.g. `[Service Discovery.pdf p.5]`); click a citation to switch to that document and jump to the page. Documents indexed with a different embedding model are automatically excluded with a reason.
+- **Cross-document Q&A (collection mode)** — with two or more documents open, toggle **"Ask across documents"** to search several PDFs at once. Pick members with checkboxes; the question is searched across each selected document's index and merged **without re-embedding**. Answers cite the source document (e.g. `[Service Discovery.pdf p.5]`); click a citation to switch to that document and jump to the page. Documents indexed with a different embedding model are automatically excluded with a reason. A citation that cannot be resolved to exactly one document (two open files sharing a filename) is shown as unavailable with the reason, instead of confidently jumping to the wrong one.
 - **Cross-document summary / comparison** — in collection mode, the **Unified summary** and **Compare** buttons synthesize the selected documents. Each document's existing summary is reused, and any document not yet summarized is summarized on the fly and saved back to it (reused next time). The result appears in the Q&A thread, attributed by document.
 - **Save & reopen collections** — **Save collection** stores the current document set with a name; on the upload screen, a **Saved collections** list lets you reopen the whole tab set at once (restored from sessions, no re-parsing).
 - `Enter`: send / `Shift+Enter`: new line
@@ -157,6 +157,7 @@ For image-based/scanned PDFs where text extraction fails, Vision AI recognizes t
 - OCR fallback kicks in automatically when text extraction fails (toggle in Settings)
 - Batched parallel processing with a progress bar; cancel anytime
 - Documents processed via OCR show an `OCR` badge
+- Pages that yield no extractable text — and pages where OCR itself failed — are reported, so a mixed document (a scan whose cover page happens to carry a text layer) can't silently end up with blank pages in its summary, citations, and search
 
 | Provider | OCR accuracy (Korean) | Notes |
 |----------|----------------------|-------|
@@ -195,7 +196,7 @@ For image-based/scanned PDFs where text extraction fails, Vision AI recognizes t
 - Self-updating — new versions are detected on startup and installed with one click; downloads never start without consent, and in-progress work is saved before the app restarts
 
 **Quality assurance**
-- 1631 unit tests + Playwright E2E + CI quality gates, plus a 4-agent parallel QA round on every release
+- 1658 unit tests + Playwright E2E + CI quality gates, plus a 4-agent parallel QA round on every release
 - Build integrity — installer SHA-256 hashes + Sigstore attestation published automatically
 - Detailed improvement/fix history: [docs/HISTORY.md](docs/HISTORY.md) (Korean)
 
@@ -225,6 +226,9 @@ For image-based/scanned PDFs where text extraction fails, Vision AI recognizes t
 | Gemini "rate limit exceeded" | The free tier has a low per-minute request limit. The app automatically lowers concurrency and retries up to twice with backoff; if it persists, retry shortly or disable image analysis for image-heavy PDFs |
 | Q&A can't answer | If the RAG badge is missing, install the embedding model with `ollama pull nomic-embed-text`. In keyword mode, include specific terms in your question |
 | RAG indexing doesn't run | Make sure first-run setup completed (nomic-embed-text auto-install). Manual install: `ollama pull nomic-embed-text` |
+| The header says the search index doesn't match the embedding model | The index was built with a different embedding model than the one now in use (typically an Ollama embedding model installed or removed while the app was open). Reopen the document to rebuild the index with the current model |
+| Some pages are missing from the summary/search | If the document is a scan whose cover page carries a text layer, the rest is skipped by text extraction; enable "Scanned PDF OCR" in Settings and reopen it. Pages with no extractable text are reported when this happens |
+| The Ollama address is rejected when saving | The address must be a full URL including the scheme, e.g. `http://localhost:11434`. It is validated at save time — previously a malformed address appeared to save, then every request failed while the status bar still showed "connected" |
 | Answers seem to generate twice | Answer verification triggers one extra LLM call when grounding is weak; you can turn off the "Answer verification" toggle in Settings |
 | Opened from Recent Documents but the PDF viewer is missing | The summary/Q&A analysis is restored, but if the original file was moved/deleted the viewer is disabled. Reopen the original file to restore it |
 | Saved sessions use too much disk | At most 30 sessions/200MB are kept; older ones are pruned automatically. Check usage and "Clear all" under Settings → Session Data |
@@ -252,7 +256,7 @@ For image-based/scanned PDFs where text extraction fails, Vision AI recognizes t
 | Styling | Tailwind CSS v4 + @tailwindcss/typography |
 | Build | electron-vite + electron-builder (Windows NSIS — macOS DMG paused until notarization credentials are in place) |
 | Auto-update | electron-updater (GitHub Releases feed) — check on startup, download and install only on user consent, renderer flush before install |
-| Testing | Vitest, 1631 unit tests / 92 files (renderer·shared 1051 + main 580) + Playwright E2E (9 CI-deterministic tests) + `tsc --noEmit` type check + CI coverage gates (81/73/81/84) |
+| Testing | Vitest, 1658 unit tests / 92 files (renderer·shared 1073 + main 585) + Playwright E2E (9 CI-deterministic tests) + `tsc --noEmit` type check + CI coverage gates (81/73/81/84) |
 | i18n | In-house (i18n.ts) — 400+ keys, useT() hook, template substitution |
 | API key security | Electron safeStorage (OS keychain encryption), decrypted only in the Main process |
 | Shared constants | `src/shared/constants.ts` — shared between Main/Renderer (prevents drift of MAX_PDF_SIZE etc.) |
@@ -305,7 +309,7 @@ src/
     │   ├── use-qa.ts          # Q&A chat hook (RAG semantic search + keyword fallback, history)
     │   ├── vector-store.ts    # In-memory vector store (cosine similarity, dimension checks)
     │   ├── store.ts           # Zustand state (summary + Q&A + RAG index)
-    │   └── __tests__/         # Unit tests (1631, 92 files)
+    │   └── __tests__/         # Unit tests (1658, 92 files)
     └── types/
         └── index.ts       # Type definitions + provider model constants
 ```
@@ -500,11 +504,11 @@ The threat model and mitigations currently in place. For the detailed per-versio
 
 ## Quality Assurance
 
-- **1631 unit tests / 92 files** — renderer·shared 1051 + main 580. The main process is behavior-tested through an electron mocking harness covering IPC handlers, OllamaManager, the API key store, ai-service, and cross-session search; the renderer/preload layer (all 17 components + core libraries such as use-summarize/use-session/pdf-parser/safe-markdown and the preload bridge) is behavior-tested via happy-dom
+- **1658 unit tests / 92 files** — renderer·shared 1073 + main 585. The main process is behavior-tested through an electron mocking harness covering IPC handlers, OllamaManager, the API key store, ai-service, and cross-session search; the renderer/preload layer (all 17 components + core libraries such as use-summarize/use-session/pdf-parser/safe-markdown and the preload bridge) is behavior-tested via happy-dom
 - **Playwright E2E** — 9 CI-deterministic tests driving the real Electron build (cold-start wizard, PDF parse, session/settings persistence across restart, upload-error paths), all AI-independent; multi-tab restore and summarize/Q&A/collection flows are covered by local-only Ollama specs
 - **CI gates** — `tsc --noEmit` (strict, incl. a separate e2e type-check project), enforced coverage thresholds (81/73/81/84), lockfile version sync check, tag ↔ `package.json` version match, `npm audit` advisory, Node 22/24 matrix plus a Windows unit-test leg
 - **Packaged-app gate (release only)** — the release workflow launches the actual packaged binary before uploading any asset, and verifies that the renderer boots and parses a real PDF **from inside the asar alone**, plus an asar size ceiling. Every other E2E spec runs the source tree's `out/`, where the repo's `node_modules` is still visible — so none of them can catch a packaging regression
-- **4-agent parallel QA** — a full-codebase QA round on every release, each agent taking a different axis (recent code, concurrency, persistence, packaging/CI, …). Zero blocking findings for 50+ consecutive rounds; what the rounds actually surface now is the expensive-but-quiet class — data that disappears without an error, and answers that look correct but aren't. Two examples fixed in v0.31.36: Q&A fell back to keyword search without page labels while still being told to cite pages (so it invented them), and storage cleanup could delete an open tab's session, which lives only on disk. The rounds also catch regressions introduced by earlier fixes — the v0.31.35 hotfix repaired two shipped in v0.31.34
+- **4-agent parallel QA** — a full-codebase QA round on every release, each agent taking a different axis (recent code, concurrency, persistence, packaging/CI, …). Zero blocking findings for 50+ consecutive rounds; what the rounds actually surface now is the expensive-but-quiet class — data that disappears without an error, and answers that look correct but aren't. Two examples fixed in v0.31.38: a question asked in the moment before a document's saved session finished loading left the stored conversation unloaded, after which autosave replaced it with just that one exchange, and a document printing "Chapter 3 …" as a running header was split into one chapter per page — 300 summarization calls for a 300-page file instead of about 30. The rounds also catch regressions introduced by earlier fixes — the v0.31.35 hotfix repaired two shipped in v0.31.34
 - Detailed improvement/fix history: [docs/HISTORY.md](docs/HISTORY.md) (Korean)
 
 ## License
