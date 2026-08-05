@@ -185,6 +185,24 @@ describe('handlePdfData — 성공 오케스트레이션', () => {
     expect(useAppStore.getState().document?.images).toEqual([]);
   });
 
+  // QA22 백로그: 조립 로직을 순수 함수(assemblePageText)로 분리하면서, **그 함수가 실제로 파싱
+  // 경로에 배선돼 있는지**를 별도로 잡는다. 순수 테스트만 두면 호출을 떼어내는 뮤테이션이 통과한다
+  // (같은 실수를 이번 사이클 dedup 배선에서 한 번 했다).
+  it('배선: 위치 기반 공백·줄바꿈이 실제 파싱 결과(pageTexts)에 반영된다', async () => {
+    // PDF_NO_TEXT 가드(최소 길이)를 넘기려면 본문이 충분히 길어야 하므로 각 조각을 30자로 만든다.
+    const seg = (ch: string) => ch.repeat(30);
+    const items = [
+      { str: seg('가'), transform: [10, 0, 0, 10, 0, 700], width: 300 },
+      { str: seg('나'), transform: [10, 0, 0, 10, 300, 700], width: 300 }, // 바로 이어짐 → 붙여쓰기
+      { str: seg('다'), transform: [10, 0, 0, 10, 0, 680], width: 300 },   // y 20 차 → 줄바꿈
+      { str: seg('라'), transform: [10, 0, 0, 10, 360, 680], width: 300 }, // 넓은 간격 → 공백
+    ];
+    P.getDocument.mockReturnValue({ promise: Promise.resolve(P.fakePdf(1, items)) });
+    await handlePdfData(pdfBuf(), 'pos.pdf', '/d/pos.pdf');
+    expect(useAppStore.getState().document?.pageTexts[0])
+      .toBe(`${seg('가')}${seg('나')}\n${seg('다')} ${seg('라')}`);
+  });
+
   it('기존 문서가 있으면 새 문서 반영 전에 persist flush', async () => {
     useAppStore.setState({ document: { id: 'old', fileName: 'old.pdf', filePath: '/d/old.pdf', pageCount: 1, extractedText: 'x', pageTexts: ['x'], chapters: [], images: [], createdAt: new Date() } });
     await handlePdfData(pdfBuf(), 'new.pdf', '/d/new.pdf');

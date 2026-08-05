@@ -101,6 +101,69 @@ export function imageSignature(img: Pick<PageImage, 'base64' | 'width' | 'height
   return `${img.mimeType}|${img.width}x${img.height}|${b.length}|${head}|${tail}`;
 }
 
+/** pdfjs TextItem 중 본 조립기가 쓰는 필드만 (테스트가 최소 픽스처로 구동할 수 있도록). */
+export interface TextItemLike {
+  str?: string;
+  transform?: number[] | null;
+  width?: number;
+}
+
+/**
+ * 페이지 텍스트 조립 — 아이템의 텍스트 행렬 위치로 공백/줄바꿈을 복원한다.
+ *
+ * pdfjs 는 한 줄을 여러 아이템으로 쪼개 주고(특히 한글은 글자 단위로 쪼개지는 경우가 많다) 공백·
+ * 줄바꿈을 문자열에 담아주지 않는다. 그래서 좌표로 복원하는데, 이 로직은 **추출 품질의 뿌리**
+ * (요약·인용·검색·RAG 가 전부 이 결과를 본다)면서도 parsePdf 의 배치 루프 안에 인라인이라
+ * 테스트가 한 건도 없었다(QA22 가 "그 루프에 테스트 0건이라 위험" 으로 수정을 보류한 지점).
+ * 순수 함수로 분리해 회귀 넷을 세우고, 아래 회전 텍스트 결함을 그 넷 위에서 고친다.
+ *
+ * 텍스트 행렬 tx = [a, b, c, d, e, f] — 글자 크기 s, 회전 θ 이면 [s·cosθ, s·sinθ, -s·sinθ, s·cosθ].
+ */
+export function assemblePageText(items: readonly unknown[]): string {
+  let lastY: number | null = null;
+  let lastEndX = 0;
+  const parts: string[] = [];
+
+  // pdfjs 의 items 는 TextItem | TextMarkedContent 혼합이라 str 유무로 걸러낸다(종전과 동일).
+  for (const raw of items) {
+    const item = raw as TextItemLike | null;
+    if (!item || typeof item.str !== 'string' || !item.str) continue;
+    const tx = item.transform ?? null;
+    if (!tx) {
+      // transform이 없으면 공백 연결 fallback
+      if (parts.length > 0) parts.push(' ');
+      parts.push(item.str);
+      continue;
+    }
+    const x = tx[4] ?? 0;
+    const y = tx[5] ?? 0;
+    // QA22 백로그: 이전엔 `|a| || |d| || 12` 였다. 90°/270° 회전 텍스트는 a=d=0 이고 크기가
+    // b·c 에 들어가므로 **실제 크기와 무관하게 12 로 폴백**됐다 — 세로 축 라벨·측면 표·워터마크가
+    // 흔한 논문/도면 PDF 에서 임계(줄바꿈 0.5×, 공백 0.3×)가 실제 크기와 어긋나, 큰 글자는 줄바꿈이
+    // 과다 삽입되고 작은 글자는 줄이 통째로 붙어 나왔다. hypot(a,b) = 문자 진행 방향의 실제 배율이라
+    // 회전각과 무관하게 정확하고, 회전 없는 일반 경우([s,0,0,s])는 |a| 와 결과가 동일하다.
+    const fontSize = Math.hypot(tx[0] ?? 0, tx[1] ?? 0) || Math.hypot(tx[2] ?? 0, tx[3] ?? 0) || 12;
+
+    if (lastY !== null) {
+      const yDiff = Math.abs(y - lastY);
+      if (yDiff > fontSize * 0.5) {
+        // 줄이 바뀜
+        parts.push('\n');
+      } else if (x > lastEndX + fontSize * 0.3) {
+        // 같은 줄에서 간격이 있으면 공백
+        parts.push(' ');
+      }
+      // 한글 글자 단위 분할: 간격이 매우 좁으면 공백 없이 연결
+    }
+
+    parts.push(item.str);
+    lastY = y;
+    lastEndX = x + (item.width ?? item.str.length * fontSize * 0.5);
+  }
+
+  return parts.join('');
+}
+
 /**
  * 비어 있는(텍스트 미추출) 페이지가 유의미하게 많으면 1회 통지. 무음 손실을 표면화하는 용도라
  * 임계를 낮게 두되, 표지·간지 몇 장이 비어 있는 정상 문서에서 과알림이 되지 않도록 비율을 본다.
@@ -205,42 +268,7 @@ export async function parsePdf(
             })();
 
             const textContent = await page.getTextContent();
-            // 텍스트 아이템 간 위치 기반 공백/줄바꿈 삽입 (한글 깨짐 방지)
-            let lastY: number | null = null;
-            let lastEndX = 0;
-            const parts: string[] = [];
-
-            for (const item of textContent.items) {
-              if (!('str' in item) || !item.str) continue;
-              const tx = ('transform' in item) ? item.transform : null;
-              if (!tx) {
-                // transform이 없으면 공백 연결 fallback
-                if (parts.length > 0) parts.push(' ');
-                parts.push(item.str);
-                continue;
-              }
-              const x = tx[4];
-              const y = tx[5];
-              const fontSize = Math.abs(tx[0]) || Math.abs(tx[3]) || 12;
-
-              if (lastY !== null) {
-                const yDiff = Math.abs(y - lastY);
-                if (yDiff > fontSize * 0.5) {
-                  // 줄이 바뀜
-                  parts.push('\n');
-                } else if (x > lastEndX + fontSize * 0.3) {
-                  // 같은 줄에서 간격이 있으면 공백
-                  parts.push(' ');
-                }
-                // 한글 글자 단위 분할: 간격이 매우 좁으면 공백 없이 연결
-              }
-
-              parts.push(item.str);
-              lastY = y;
-              lastEndX = x + (item.width ?? item.str.length * fontSize * 0.5);
-            }
-
-            pages[i] = parts.join('');
+            pages[i] = assemblePageText(textContent.items);
 
             const pageImages = await imagePromise;
             // 푸시 직전 잔여 슬롯 확인 — 다른 페이지 promise가 그동안 푸시했을 수 있으므로

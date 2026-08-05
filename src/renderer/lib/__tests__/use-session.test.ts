@@ -77,12 +77,17 @@ beforeEach(() => {
     // 회귀 넷 6건이 앞 테스트가 세운 summaryStreamComplete=true 에 의존해 통과했고, 단독
     // 실행하면 실패했다(순서 의존 = 회귀를 못 잡는 그린).
     summaryStreamComplete: false, summaryStreamType: null,
+    // QA22 백로그 후속(셔플 실측): summaryType 도 리셋하지 않아 앞 테스트가 세운 값이 누수됐다.
+    // 복원 테스트들이 이 키를 직접 세우므로(예: 'custom:keep'), 순서가 바뀌면 뒤 테스트의
+    // savePartial 단언이 남의 유형을 보고 깨진다 — 위 두 키와 정확히 같은 사고.
+    summaryType: 'full',
     // 컬렉션 gather 플래그도 테스트 간 누수 방지(아래 flush 케이스가 true 로 세운다).
     isCollectionBusy: false,
     isGenerating: false, isQaGenerating: false, sessionRestorePending: false,
     restoredSession: null, ragIndex: new VectorStore(),
     ragState: { isIndexing: false, progress: null, isAvailable: false, model: null, chunkCount: 0, error: null },
-    settings: { ...useAppStore.getState().settings, persistSessions: true, provider: 'ollama' },
+    // settings 를 스프레드로 이어받으면 앞 테스트가 넣은 커스텀 템플릿이 남는다 — 명시 리셋.
+    settings: { ...useAppStore.getState().settings, persistSessions: true, provider: 'ollama', customSummaryTemplates: [] },
   });
 });
 

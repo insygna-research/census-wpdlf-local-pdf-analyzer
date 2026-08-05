@@ -21,6 +21,15 @@ vi.stubGlobal('crypto', { randomUUID: () => `id-${++_testIdCounter}` });
 
 import { useAppStore, whenSettingsCommitted, flushPendingWrites } from '../store';
 
+// 파일 전역 격리: 가짜 localStorage 는 모듈 스코프라 테스트 간에 그대로 남는다.
+// QA22 백로그 후속(셔플 실측): 'citationPanelWidth' 를 쓰는 테스트가 정리를 하지 않아,
+// 선언 순서가 바뀌면 뒤 describe 의 "아직 미저장" 단언이 앞 테스트가 남긴 '0.55' 를 보고 깨졌다
+// (고정 순서에서만 그린 — 순서 의존). 각 describe 의 개별 delete 에 의존하는 대신(하나 빠뜨리면
+// 재발한다) 여기서 통째로 비운다.
+beforeEach(() => {
+  for (const k of Object.keys(lsStore)) delete lsStore[k];
+});
+
 // 각 테스트 진입 시 스트림/메시지 상태만 초기화 — timer 는 fake 사용.
 function resetStreams(): void {
   const s = useAppStore.getState();

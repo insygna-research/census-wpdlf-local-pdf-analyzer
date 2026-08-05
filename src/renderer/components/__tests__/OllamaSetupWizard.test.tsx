@@ -61,6 +61,13 @@ describe('OllamaSetupWizard 선택 설치', () => {
   const koreanItemLabel = () => t('setup.downloadKorean', { model: OPTIONAL_KOREAN_MODEL });
 
   beforeEach(() => {
+    // QA22 백로그 후속(셔플 실측): 이 beforeEach 는 매번 `mockResolvedValueOnce([])` 를 하나씩
+    // **큐에 더 쌓기만** 했다(mockClear 는 호출기록만 지우고 once 큐는 남는다). 앞 테스트가 그 once
+    // 를 다 소비하지 않으면 다음 테스트의 **pull 후 최종 검증** listModels 가 남은 [] 를 받아
+    // "설치된 모델이 없습니다" 로 오실패한다 — 선언 순서에서만 우연히 균형이 맞아 그린이었다.
+    // 매 테스트에서 목을 완전 초기화하고 기본값을 다시 세운다(키를 열거하지 않으므로 목이 늘어도 안전).
+    for (const m of Object.values(ollamaMock)) m.mockReset();
+    ollamaMock.cancelPull.mockResolvedValue({ success: true });
     ollamaMock.getStatus.mockResolvedValue({ installed: true, running: true, models: ['gemma3'] });
     ollamaMock.install.mockResolvedValue({ success: true });
     ollamaMock.start.mockResolvedValue(undefined);
