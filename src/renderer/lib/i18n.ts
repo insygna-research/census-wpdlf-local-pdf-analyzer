@@ -244,6 +244,9 @@ export const _translations = {
   'collection.saveConfirm': { ko: '저장', en: 'Save' },
   'collection.saveCancel': { ko: '취소', en: 'Cancel' },
   'collection.saved': { ko: '컬렉션을 저장했습니다.', en: 'Collection saved.' },
+  // QA23: 기존 컬렉션 갱신은 멤버 목록을 **교체**한다(빠진 문서는 컬렉션에서 사라진다). 신규 저장과
+  // 같은 문구로 알리면 사용자가 축소를 인지할 수 없으므로, 대상 이름과 결과 문서 수를 함께 알린다.
+  'collection.savedUpdate': { ko: "'{name}' 컬렉션을 갱신했습니다 (문서 {count}개).", en: "Updated the collection '{name}' ({count} documents)." },
   'collection.saveFail': { ko: '컬렉션 저장에 실패했습니다.', en: 'Failed to save collection.' },
   'collection.savedTitle': { ko: '저장된 컬렉션', en: 'Saved collections' },
   'collection.savedEmpty': { ko: '저장된 컬렉션이 없습니다.', en: 'No saved collections.' },

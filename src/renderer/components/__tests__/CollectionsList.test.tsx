@@ -85,6 +85,21 @@ describe('CollectionsList', () => {
     await waitFor(() => expect(useAppStore.getState().collection.saved).toEqual({ id: 'c1', name: '강의 묶음' }));
   });
 
+  // QA23(D-MED, 회수 불가 손실): 부분 복원(멤버 세션이 LRU 축출·손상으로 일부 사라짐)에서
+  // 소속을 기록하면, 이름이 프리필된 채 저장했을 때 **복원되지 못한 멤버가 컬렉션에서 영구 삭제**
+  // 된다. 그 문서를 나중에 다시 열어 세션이 살아나도 컬렉션에는 없다. 부분 복원은 "이 컬렉션을
+  // 편집 중" 이라고 볼 수 없으므로 소속을 기록하지 않는다(저장하면 새 컬렉션이 된다 — 무손실).
+  it('부분 복원(opened < total)이면 소속을 기록하지 않는다 — 누락 멤버 삭제 방지', async () => {
+    M.openCollection.mockResolvedValue({ opened: 2, total: 3 });
+    useAppStore.setState({ collection: { enabled: false, memberHashes: [] } });
+    const user = userEvent.setup();
+    render(<CollectionsList />);
+    await waitFor(() => expect(screen.getByText(/강의 묶음/)).toBeTruthy());
+    await user.click(screen.getByRole('button', { name: '열기' }));
+    await waitFor(() => expect(useAppStore.getState().notice).not.toBeNull()); // 부분 복원 안내는 유지
+    expect(useAppStore.getState().collection.saved).toBeUndefined();
+  });
+
   it('전원 복원 실패(opened 0) 면 소속을 기록하지 않는다', async () => {
     M.openCollection.mockResolvedValue({ opened: 0, total: 2 });
     useAppStore.setState({ collection: { enabled: false, memberHashes: [] } });

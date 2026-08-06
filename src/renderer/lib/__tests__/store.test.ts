@@ -643,6 +643,25 @@ describe('컬렉션 Q&A 상태 (multi-doc Phase 2)', () => {
     expect(useAppStore.getState().collection).toEqual({ enabled: false, memberHashes: [] });
   });
 
+  // QA23(A/D-MED, 회수 불가 손실): 저장된 컬렉션을 **열자마자의 정상 상태**는
+  // enabled=false + memberHashes=[] 다(openCollection 이 그렇게 초기화한다). 그런데 해제 조건이
+  // 그 둘만 봐서, 이 상태에서 탭을 전부 닫아도 `saved` 소속이 남았다. 이후 **무관한 문서**를
+  // 열어 저장하면 이름이 프리필된 채 같은 id 로 upsert 돼 원본 컬렉션의 멤버가 통째로 교체된다
+  // (확인 프롬프트도 되돌리기도 없음 — collections.json 은 유일 사본).
+  it('컬렉션을 열기만 하고 탭을 전부 닫으면 saved 소속도 함께 끊긴다', () => {
+    useAppStore.setState({
+      openTabs: [
+        { filePath: '/a', fileName: 'a.pdf', pageCount: 1, docHash: 'ha' },
+        { filePath: '/b', fileName: 'b.pdf', pageCount: 1, docHash: 'hb' },
+      ],
+      // 열기 직후 상태: 토글 OFF, 멤버 미선택, 소속만 기록됨
+      collection: { enabled: false, memberHashes: [], saved: { id: 'c1', name: '강의 묶음' } },
+    });
+    useAppStore.getState().removeOpenTab('/b');
+    useAppStore.getState().removeOpenTab('/a');
+    expect(useAppStore.getState().collection.saved, '해체된 세트의 소속이 남으면 안 된다').toBeUndefined();
+  });
+
   it('removeOpenTab 으로 모든 탭이 닫히면 컬렉션 모드 초기화', () => {
     useAppStore.setState({
       openTabs: [{ filePath: '/a', fileName: 'a.pdf', pageCount: 1, docHash: 'ha' }],

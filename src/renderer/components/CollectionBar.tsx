@@ -113,7 +113,13 @@ export function CollectionBar() {
     if (r.ok) {
       // 신규 저장이었다면 이후 재저장도 갱신이 되도록 방금 발급된 id 로 소속을 기록.
       if (r.id) useAppStore.getState().setSavedCollection({ id: r.id, name });
-      useAppStore.getState().setNotice({ message: t('collection.saved') });
+      // QA23: 갱신은 멤버 목록을 교체하므로(빠진 문서는 컬렉션에서 사라진다) 신규 저장과 구분해
+      // 대상과 결과 개수를 알린다 — 의도치 않은 축소를 사용자가 즉시 알아챌 수 있어야 한다.
+      useAppStore.getState().setNotice({
+        message: reuseId
+          ? t('collection.savedUpdate', { name, count: String(memberHashesToSave.length) })
+          : t('collection.saved'),
+      });
     } else {
       // 실패는 setError(닫기 전까지 잔존)로 통일 — notice(자동소멸)면 놓치기 쉬움(R47)
       useAppStore.getState().setError({ code: 'COLLECTION_SAVE_FAIL', message: t('collection.saveFail') });

@@ -513,14 +513,38 @@ async function ocrFallback(
 }
 
 /**
+ * 목차(TOC) 줄 판정 — 순수.
+ *
+ * QA23(C-HIGH): 국문 교재·학위논문의 전형 구조는 [표지 → 목차 2~4쪽 → 본문] 이다. 목차 줄
+ * ("제1장 서론 …… 3")도 페이지의 첫 시각 줄이라 챕터로 승격되는데, 그러면 **번호를 먼저
+ * 소진**해 뒤따르는 실제 본문 제1·2·3장이 전부 아래 notAdvancing 가드에 걸려 억제된다 —
+ * 본문 챕터 경계가 통째로 사라지고 제목이 목차 점선 줄이 된다(에러·배지 없음).
+ *
+ * 목차 줄의 판별 신호는 **줄 끝의 쪽번호**와 그 앞의 채움(leader)이다: 점선(`.`·`·`·`…`)이나
+ * 3칸 이상 공백 뒤에 숫자로 끝나면 목차로 본다. 본문 헤딩("제1장 서론")은 쪽번호로 끝나지
+ * 않으므로 걸리지 않고, "제3장 사례 2" 처럼 단일 공백 뒤 숫자로 끝나는 정상 제목도 안전하다.
+ */
+export function isTocLine(line: string): boolean {
+  return /[.·…]{2,}\s*\d+\s*$/.test(line) || /\s{3,}\d+\s*$/.test(line);
+}
+
+/**
  * 챕터 헤딩에서 비교 가능한 정체성을 뽑는다(순수 — 러닝 헤더 판정용).
  * - `key`: 공백·구두점을 정규화한 제목. 직전 챕터와 같으면 **같은 챕터의 러닝 헤더**로 본다.
- * - `num`: 챕터 번호(있으면). 증가하지 않으면 새 챕터로 승격하지 않는다.
+ * - `num`: 챕터 번호(있으면). 같은 단위 안에서 증가하지 않으면 새 챕터로 승격하지 않는다.
+ * - `unit`: 번호의 단위(`장`/`절`/`chapter`). QA23(C-HIGH): 이전에는 줄 어디서든 첫 숫자를
+ *   집어 단위를 구분하지 않았다. 그래서 `1절`·`2절` 이 번호 2를 선점하면 뒤따르는 **`제2장`이
+ *   억제돼 장 하나가 통째로 사라졌다**(절이 새 쪽에서 시작하는 국문 교재에서 흔한 배치).
+ *   단위가 다르면 번호를 비교하지 않는다.
  */
-export function parseChapterHeading(firstLine: string): { key: string; num: number | null } {
+export function parseChapterHeading(firstLine: string): { key: string; num: number | null; unit: string | null } {
   const key = firstLine.replace(/\s+/g, ' ').replace(/[.·:;,\-–—]+$/, '').trim().toLowerCase();
-  const m = firstLine.match(/(\d+)/);
-  return { key, num: m?.[1] !== undefined ? Number.parseInt(m[1], 10) : null };
+  // 헤딩 토큰에서만 번호·단위를 뽑는다(줄 뒤쪽의 쪽번호·연도 등을 집지 않도록).
+  const ko = firstLine.match(/^제?\s*(\d+)\s*([장절])/);
+  if (ko?.[1] !== undefined) return { key, num: Number.parseInt(ko[1], 10), unit: ko[2] ?? null };
+  const en = firstLine.match(/^chapter\s*(\d+)/i);
+  if (en?.[1] !== undefined) return { key, num: Number.parseInt(en[1], 10), unit: 'chapter' };
+  return { key, num: null, unit: null };
 }
 
 export function detectChapters(pages: string[]): Chapter[] {
@@ -533,7 +557,7 @@ export function detectChapters(pages: string[]): Chapter[] {
   let chapterIndex = 0;
   let preChapterText = '';
   // QA22(B-MED): 직전에 승격한 헤딩의 정체성. **러닝 헤더 오인 차단**용.
-  let lastHeading: { key: string; num: number | null } | null = null;
+  let lastHeading: { key: string; num: number | null; unit: string | null } | null = null;
 
   for (let i = 0; i < pages.length; i++) {
     const page = pages[i];
@@ -547,11 +571,17 @@ export function detectChapters(pages: string[]): Chapter[] {
     // ~30회여야 할 요약이 **300회**가 되고(로컬은 시간, 클라우드는 비용) 본문은 동일 제목
     // 300개로 도배된다. 직전 헤딩과 **제목이 같거나 번호가 진행하지 않으면** 승격하지 않고
     // 본문으로 흡수한다(같은 챕터가 여러 페이지에 걸치는 정상 상태).
+    // QA23(C-HIGH): 목차 줄은 애초에 승격하지 않는다. 승격되면 번호를 소진해 **본문 챕터
+    // 전체가 아래 notAdvancing 에 걸려 사라진다**(목차가 본문보다 앞에 오므로 항상 이 순서다).
+    if (match && isTocLine(firstLine)) match = null;
+
     if (match && lastHeading) {
       const h = parseChapterHeading(firstLine);
       const sameTitle = h.key === lastHeading.key;
       // 번호가 있는데 이전 이하로 되돌아가면(같은 번호 반복 포함) 새 챕터가 아니다.
-      const notAdvancing = h.num !== null && lastHeading.num !== null && h.num <= lastHeading.num;
+      // 단, **단위가 다르면 비교하지 않는다** — `2절` 이 `제2장` 을 가리는 것을 막는다(QA23).
+      const prevNum = lastHeading.num;
+      const notAdvancing = h.num !== null && prevNum !== null && h.unit === lastHeading.unit && h.num <= prevNum;
       if (sameTitle || notAdvancing) match = null;
     }
 

@@ -434,7 +434,11 @@ export const useAppStore = create<AppState>((set) => ({
     // (QA6-C M1: 탭 2→1 축소 유령 활성). 0개(전체 닫힘) 리셋의 일반화 — 다음 묶음 누수 방지 겸용.
     // (탭 전환/+ 새 탭은 openTabs 가 줄지 않으므로 컬렉션 상태 유지)
     const candidateCount = openTabs.filter((t) => t.docHash).length;
-    if (candidateCount < 2 && (collection.enabled || collection.memberHashes.length > 0)) {
+    // QA23(A/D-MED): 해제 조건이 enabled·memberHashes 만 봐서, **저장된 컬렉션을 열자마자의
+    // 정상 상태**(둘 다 비어 있고 saved 만 있음)에서는 리셋이 아예 실행되지 않았다. 그 결과 탭을
+    // 전부 닫아도 소속이 남아, 이후 무관한 문서를 열어 저장하면 이름이 프리필된 채 같은 id 로
+    // upsert 돼 원본 컬렉션 멤버가 통째로 교체됐다(회수 불가). saved 도 해제 트리거에 포함한다.
+    if (candidateCount < 2 && (collection.enabled || collection.memberHashes.length > 0 || collection.saved)) {
       // saved 도 함께 버린다 — 복원된 세트가 해체된 뒤의 저장은 "그 컬렉션의 갱신"이 아니다.
       collection = { enabled: false, memberHashes: [] };
     }

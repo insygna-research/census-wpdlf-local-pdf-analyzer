@@ -43,9 +43,14 @@ export function CollectionsList() {
       const { opened, total } = await openCollection(c.docHashes);
       if (opened === 0) {
         useAppStore.getState().setError({ code: 'COLLECTION_OPEN_FAIL', message: tr('collection.openFail') });
-      } else {
-        // 복원된 탭 세트의 출처를 기록 — 같은 이름으로 재저장하면 신규 항목이 아니라 이 id 의 갱신이
-        // 된다(동명 누적·무관 컬렉션 LRU 축출 방지). 부분 복원(opened<total)도 소속은 동일하다.
+      } else if (opened === total) {
+        // 복원된 탭 세트의 출처를 기록 — 같은 이름으로 재저장하면 신규 항목이 아니라 이 id 의
+        // 갱신이 된다(동명 누적·무관 컬렉션 LRU 축출 방지).
+        //
+        // QA23(D-MED, 회수 불가): **부분 복원에서는 기록하지 않는다.** 멤버 세션이 LRU 축출·손상
+        // 으로 일부 사라진 상태인데 소속을 기록하면, 프리필된 이름 그대로 저장했을 때 복원되지
+        // 못한 멤버가 컬렉션에서 영구 삭제된다(그 문서를 다시 열어 세션이 살아나도 복구 안 됨).
+        // 부분 복원 상태는 "이 컬렉션을 편집 중" 이 아니므로, 저장하면 새 컬렉션이 된다(무손실).
         useAppStore.getState().setSavedCollection({ id: c.id, name: c.name });
       }
       if (opened > 0 && opened < total) {

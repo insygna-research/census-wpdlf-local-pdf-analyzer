@@ -155,6 +155,9 @@ describe('CollectionBar 동작', () => {
     expect(input.value).toBe('나의 묶음');
     await user.click(screen.getByRole('button', { name: '저장' }));
     expect(mockSaveCollection).toHaveBeenCalledWith(expect.objectContaining({ id: 'col-1', name: '나의 묶음' }));
+    // QA23: 갱신은 멤버 목록을 교체하므로 신규 저장과 구분해 알린다(축소를 즉시 인지할 수 있게).
+    await waitFor(() => expect(useAppStore.getState().notice?.message).toContain('갱신'));
+    expect(useAppStore.getState().notice?.message).toContain('2개');
   });
 
   it('이름을 바꿔 저장하면 신규 항목(id 미전달) — "다른 이름으로 저장" 을 덮어쓰기로 오해하지 않는다', async () => {

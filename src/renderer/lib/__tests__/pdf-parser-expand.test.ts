@@ -133,6 +133,61 @@ describe('detectChapters — 러닝 헤더 (QA22)', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// QA23(C-HIGH): 위 러닝 헤더 가드의 **역효과**. 국문 교재·학위논문의 전형 구조는
+// [표지 → 목차 2~4쪽 → 본문] 인데, 목차 줄("제1장 서론 …… 3")이 페이지 첫 줄이라 챕터로
+// 승격되면서 **번호를 먼저 소진**한다. 그러면 뒤따르는 실제 본문 제1·2·3장이 전부
+// `notAdvancing` 으로 억제돼 **본문 챕터 경계가 통째로 사라진다**(챕터 제목이 목차 점선 줄이
+// 되고 본문 전체가 마지막 목차 챕터에 뭉친다). 가드 이전에는 과다검출이었지만 경계는 맞았다.
+//
+// 원 회귀 넷이 러닝 헤더 4케이스만 덮고 **자기 수정의 대표 입력(목차 선행)을 안 덮은** 결과다.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('detectChapters — 목차 선행 문서 (QA23 회귀)', () => {
+  it('점선 목차가 본문 챕터 번호를 소진하지 않는다', () => {
+    const pages = [
+      '표지\n제목: 운영체제 개론',
+      '제1장 서론 ......... 3\n제2장 프로세스 ..... 12\n제3장 메모리 ....... 40',
+      '제1장 서론\n서론 본문입니다.',
+      '제2장 프로세스 관리\n프로세스 본문입니다.',
+      '제3장 메모리 관리\n메모리 본문입니다.',
+    ];
+    const chapters = detectChapters(pages);
+
+    expect(chapters, '본문 3개 장이 각각 챕터가 돼야 한다').toHaveLength(3);
+    expect(chapters.map((c) => c.startPage)).toEqual([1, 4, 5]); // 첫 챕터는 표지·목차를 흡수
+    expect(chapters[0]!.title, '목차 점선 줄이 챕터 제목이 되면 안 된다').not.toContain('...');
+    expect(chapters[1]!.text).toContain('프로세스 본문');
+    expect(chapters[2]!.text).toContain('메모리 본문');
+  });
+
+  it('공백으로 자리를 채운 목차도 동일하게 무시한다', () => {
+    const pages = [
+      '제1장 서론          3\n제2장 본론          20',
+      '제1장 서론\n서론 본문',
+      '제2장 본론\n본론 본문',
+    ];
+    const chapters = detectChapters(pages);
+    expect(chapters).toHaveLength(2);
+    expect(chapters[0]!.title).not.toMatch(/\d\s*$/); // 쪽번호로 끝나는 목차 줄이 아님
+  });
+
+  it('장과 절이 섞여도 장 번호가 절 번호에 가려지지 않는다', () => {
+    // 절이 새 쪽에서 시작하는 국문 교재에서 흔한 배치. `2절` 이 num=2 를 선점하면
+    // 뒤의 `제2장` 이 notAdvancing 으로 억제돼 **장 하나가 통째로 사라진다**.
+    const pages = [
+      '제1장 개요\n개요 본문',
+      '1절 배경\n배경 본문',
+      '2절 목적\n목적 본문',
+      '제2장 방법\n방법 본문',
+      '1절 절차\n절차 본문',
+    ];
+    const chapters = detectChapters(pages);
+
+    const titles = chapters.map((c) => c.title);
+    expect(titles.some((t) => t.includes('제2장')), '제2장이 소실되면 안 된다').toBe(true);
+  });
+});
+
 // QA22(B-MED): 문서 내 중복 이미지 제거 — 강의자료의 반복 로고가 Vision 예산을 선점하던 결함.
 describe('imageSignature — 중복 이미지 판정 (QA22)', () => {
   const img = (base64: string, w = 100, h = 100) => ({ base64, width: w, height: h, mimeType: 'image/png' as const });

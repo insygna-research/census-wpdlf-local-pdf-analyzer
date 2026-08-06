@@ -605,6 +605,9 @@ describe('persistCurrentSession (module-3)', () => {
       ragIndex: new VectorStore(), // 재빌드 시작 직후 — 메모리 인덱스는 비어 있음
       ragState: { isIndexing: true, progress: null, isAvailable: false, model: null, chunkCount: 0, error: null },
     });
+    // 프로덕션의 readSessionMeta 는 session.json 전체(embedModel 포함, blob 제외)를 돌려준다 —
+    // 목도 그렇게 둬야 "디스크에 인덱스가 있는가" 판정이 실제와 같은 입력을 본다(QA23).
+    api.session.loadMeta.mockResolvedValue({ session: existing.session });
     api.session.load.mockResolvedValue(existing);
 
     await persistCurrentSession();
@@ -630,6 +633,7 @@ describe('persistCurrentSession (module-3)', () => {
       // isIndexing:false + error 세팅 = 빌드 실패로 끝난 상태
       ragState: { isIndexing: false, progress: null, isAvailable: false, model: null, chunkCount: 0, error: 'embedFailed' },
     });
+    api.session.loadMeta.mockResolvedValue({ session: existing.session });
     api.session.load.mockResolvedValue(existing);
 
     await persistCurrentSession();
@@ -638,6 +642,33 @@ describe('persistCurrentSession (module-3)', () => {
     expect(payload.session.embedModel).toBe('nomic-embed-text'); // 기존 인덱스 유지
     expect(payload.session.chunkMeta).toHaveLength(2);
     expect(payload.blob).toBe(existing.blob); // 기존 블롭 그대로 — unlink 방지
+  });
+
+  // QA23(D-HIGH, 데이터·비용 손실): QA19 가 위 결함을 고치면서 표식(error)을 **배치 실패 3곳에만**
+  // 붙이고 **가장 흔한 진입점인 가용성 체크 실패**(Ollama 미기동/키 부재/오프라인)에는 안 붙였다.
+  // 그 경로는 isAvailable:false + error:null 로 끝나므로 preserveDiskIndex 가 꺼진 채 자동저장이
+  // 돌아, **문서를 열어보기만 해도 디스크 index.bin 이 삭제**됐다(무음, ok:true). 다시 켜면 전
+  // 문서 재임베딩 — 로컬은 수 분, 클라우드는 실과금.
+  it('임베딩 불가(Ollama 꺼짐 등)로 인덱스를 못 만든 상태 → 디스크 인덱스 보존', async () => {
+    const doc = makeDoc();
+    const existing = persistedSession(doc, true); // 디스크에 완전한 인덱스가 있는 문서
+    useAppStore.setState({
+      document: doc,
+      summaryStream: '복원된 요약',
+      qaMessages: [],
+      ragIndex: new VectorStore(), // 임베딩 불가 → 메모리 인덱스 비어 있음
+      // 가용성 체크 실패의 실제 종료 상태: error 는 null 이다(use-qa 가 안 세운다)
+      ragState: { isIndexing: false, progress: null, isAvailable: false, model: null, chunkCount: 0, error: null },
+    });
+    api.session.loadMeta.mockResolvedValue({ session: existing.session });
+    api.session.load.mockResolvedValue(existing);
+
+    await persistCurrentSession();
+
+    const payload = api.session.save.mock.calls[0]![0] as { session: PersistedSession; blob: ArrayBuffer | null };
+    expect(payload.blob, '디스크 index.bin 이 unlink 되면 안 된다').toBe(existing.blob);
+    expect(payload.session.embedModel).toBe('nomic-embed-text');
+    expect(payload.session.chunkMeta).toHaveLength(2);
   });
 
   it('인덱스 없으면 blob=null 로 저장', async () => {
@@ -773,6 +804,8 @@ describe('persistCurrentSession serialize-skip + 부분저장 (Tier2/3)', () => 
       ragIndex: new VectorStore(),
       ragState: { isIndexing: true, progress: null, isAvailable: false, model: 'nomic-embed-text', chunkCount: 1, error: null },
     });
+    // 머지 read 는 가벼운 loadMeta 로 먼저 나간다(QA23) — 실제 I/O 오류는 readSessionMeta 가 전파한다.
+    api.session.loadMeta.mockRejectedValue(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }));
     api.session.load.mockRejectedValue(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }));
 
     await persistCurrentSession();

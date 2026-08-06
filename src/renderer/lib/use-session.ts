@@ -301,7 +301,18 @@ async function doPersistCurrentSession(flush = false): Promise<void> {
   // "인덱스 없음(blob:null)"으로 저장하면 main 이 디스크의 이전 정상 index.bin 을 unlink 해버려
   // 재오픈 시 재임베딩을 강제한다. indexing 과 동일하게 디스크 blob 을 보존하면, 재오픈 시
   // 마지막 정상 인덱스가 복원된다(실패 이전의 완전한 인덱스).
-  const preserveDiskIndex = indexing || !!s.ragState.error;
+  // QA23(D-HIGH): QA19 는 표식(error)을 **배치 실패 3곳에만** 붙였고, 가장 흔한 진입점인
+  // **가용성 체크 실패**(Ollama 미기동 / API 키 부재 / 오프라인)는 `isAvailable:false, error:null`
+  // 로 끝난다. 그래서 이 술어가 꺼진 채 자동저장이 돌아, 사용자가 **문서를 열어보기만 해도**
+  // 디스크 index.bin 이 unlink 됐다(무음 · ok:true 라 실패 통지망도 통과). 다시 켜면 전 문서
+  // 재임베딩 — 로컬은 수 분, 클라우드는 실과금.
+  //
+  // 표식을 한 곳 더 붙이는 대신(=네 번째 형제를 만드는 대신) **"쓸 수 있는 인덱스를 갖고 있지
+  // 않다"는 하나의 파생 상태**로 승격한다. 디스크 인덱스를 지워도 되는 경우는 새 인덱스를
+  // 실제로 기록할 때뿐이므로, 그 외에는 전부 보존이 안전한 기본값이다.
+  // 판정 기준은 **메모리 인덱스의 실재**다(ragState 플래그가 아니라). 플래그는 빌드 단계마다
+  // 달라지지만 "지금 기록할 인덱스를 갖고 있는가"는 이것 하나로 결정된다.
+  const preserveDiskIndex = indexing || !!s.ragState.error || s.ragIndex.size === 0;
   try {
     const docHash = await getCachedDocHash(doc.id, doc.extractedText);
     if (useAppStore.getState().document?.id !== doc.id) return; // 레이스
@@ -357,9 +368,20 @@ async function doPersistCurrentSession(flush = false): Promise<void> {
     let summaries: PersistedSession['summaries'] = {};
     let prevIndex: { embedModel: string; embedDim: number; chunkMeta: PersistedSession['chunkMeta']; blob: ArrayBuffer } | null = null;
     try {
-      if (preserveDiskIndex) {
-        // 인덱싱 중 또는 빌드 실패(QA19) flush: 기존 인덱스(blob) 보존이 필요하므로 full load.
-        const existing = await api.load(docHash);
+      // QA23(D-HIGH): 보존 여부와 **무거운 읽기 여부**를 분리한다. 이전에는 preserveDiskIndex 가
+      // 곧바로 full load(수 MB blob + 구조화 복제)를 의미했는데, 보존 대상이 "인덱스를 못 만든
+      // 모든 문서"로 넓어지면 **디스크에 인덱스가 아예 없는 문서까지** 매 자동저장마다 무거운
+      // 경로를 타 Tier3 성능 최적화가 무효화된다(회귀 넷이 이를 잡았다).
+      // → 항상 가벼운 loadMeta 로 먼저 읽고, **디스크에 실제로 인덱스가 있을 때만** blob 을
+      //   가지러 한 번 더 읽는다. 인덱스 없는 문서의 비용은 종전과 동일하다.
+      const light = await (api.loadMeta?.(docHash) ?? api.load(docHash)) as
+        { session?: unknown; blob?: ArrayBuffer | null } | null;
+      const lightSession = light?.session as PersistedSession | undefined;
+      if (lightSession?.summaries) summaries = { ...lightSession.summaries };
+      const diskHasIndex = !!lightSession?.embedModel && !!lightSession?.embedDim;
+      if (preserveDiskIndex && diskHasIndex) {
+        // loadMeta 는 blob 을 싣지 않는다 — 보존할 인덱스가 실재할 때만 full load 로 가져온다.
+        const existing = light?.blob ? light : await api.load(docHash);
         const existSession = existing?.session as PersistedSession | undefined;
         if (existSession?.summaries) summaries = { ...existSession.summaries };
         if (existing?.blob && existSession?.embedModel && existSession.embedDim) {
@@ -370,11 +392,6 @@ async function doPersistCurrentSession(flush = false): Promise<void> {
             blob: existing.blob,
           };
         }
-      } else {
-        // 일반 경로: 머지에 summaries 만 필요 → index.bin(수 MB) 재읽기·구조화복제 생략(성능 P).
-        const existing = await (api.loadMeta?.(docHash) ?? api.load(docHash));
-        const existSession = existing?.session as PersistedSession | undefined;
-        if (existSession?.summaries) summaries = { ...existSession.summaries };
       }
     } catch {
       // QA 정합성: 머지 read 가 실제 I/O 오류로 실패하면(load/loadMeta 가 throw) 디스크엔 유효
