@@ -20,6 +20,8 @@ import { useRagBuilder } from './lib/use-qa';
 import { useSessionPersistence } from './lib/use-session';
 import { prefetchMarkdownRenderer } from './lib/safe-markdown';
 import { MAX_PDF_SIZE_BYTES } from '../shared/constants';
+import { selectUpdateBanner, shouldResetDismiss, type UpdateBanner } from './lib/update-banner';
+import type { UpdateState } from '../shared/update-types';
 import logoImg from './assets/logo.png';
 
 export default function App() {
@@ -68,9 +70,10 @@ export default function App() {
   const prevCollapsedRef = useRef(useAppStore.getState().summaryCollapsed);
   const [bgModelSync, setBgModelSync] = useState<string | null>(null);
   const [bgModelLoading, setBgModelLoading] = useState(false);
-  // 자동 업데이트: 다운로드가 끝난 뒤에만 배너를 띄운다. 확인/다운로드 진행은 설정 패널에만
-  // 표시 — 사용자가 요청하지 않은 백그라운드 작업으로 메인 화면을 어지럽히지 않기 위함.
-  const [updateReadyVersion, setUpdateReadyVersion] = useState<string | null>(null);
+  // 자동 업데이트 배너 — 어떤 상태에서 무엇을 띄울지는 update-banner.ts(순수)가 정한다.
+  // 이전에는 'downloaded' 일 때만 떴는데, 다운로드는 사용자 승인이 있어야 시작되므로
+  // **새 버전이 나왔다는 사실 자체를 설정 화면을 열어야만 알 수 있었다**(체인이 첫 칸에서 끊김).
+  const [updateBanner, setUpdateBanner] = useState<UpdateBanner | null>(null);
   const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false);
   // 설치는 앱을 종료시키므로 진행 중 작업이 있으면 막는다(SettingsPanel 과 동일 기준).
   // QA20(A·C 수렴): RAG 인덱싱·PDF 파싱도 포함해야 한다 — 부분 인덱스는 설계상 영속되지 않아
@@ -264,23 +267,20 @@ export default function App() {
     return unsubscribe;
   }, []);
 
-  // 자동 업데이트 상태 수신 — 다운로드 완료 시에만 배너를 띄운다(그 외 상태는 설정 패널 소관).
-  // main 이 상태 머신을 소유하므로 여기서는 표시용 최소 정보만 보관한다.
+  // 자동 업데이트 상태 수신 — main 이 상태 머신을 소유하므로 여기서는 표시용 최소 정보만 보관한다.
   useEffect(() => {
-    const unsubscribe = window.electronAPI.update.onStatus((state) => {
-      if (state.status === 'downloaded') {
-        setUpdateReadyVersion(state.newVersion);
-        // 새 버전이 준비될 때마다 dismiss 를 해제 — 이전 버전에서 닫아둔 상태가 다음 버전
-        // 알림까지 삼키지 않도록.
-        setUpdateBannerDismissed(false);
-      } else {
-        setUpdateReadyVersion(null);
-      }
-    });
-    // 설정 패널을 거치지 않고 첫 렌더에서도 준비 상태를 반영(예: 창을 다시 연 경우).
-    window.electronAPI.update.getState()
-      .then((state) => { if (state.status === 'downloaded') setUpdateReadyVersion(state.newVersion); })
-      .catch(() => {});
+    const applyState = (state: UpdateState): void => {
+      setUpdateBanner((prev) => {
+        const next = selectUpdateBanner(state);
+        // 단계가 바뀌거나 새 버전이 도착하면 "닫아둠"을 해제한다 — 사용자가 available 을 닫은 건
+        // 지금 다운로드하지 않겠다는 뜻이지 설치 준비 알림까지 버리겠다는 뜻이 아니다.
+        if (shouldResetDismiss(prev, next)) setUpdateBannerDismissed(false);
+        return next;
+      });
+    };
+    const unsubscribe = window.electronAPI.update.onStatus(applyState);
+    // 설정 패널을 거치지 않고 첫 렌더에서도 현재 상태를 반영(예: 창을 다시 연 경우).
+    window.electronAPI.update.getState().then(applyState).catch(() => {});
     return unsubscribe;
   }, []);
 
@@ -524,29 +524,52 @@ export default function App() {
       {/* multi-doc Phase 1: 열린 문서 탭바 (열린 문서 없으면 자체적으로 숨김) */}
       <TabBar />
 
-      {/* 자동 업데이트 준비 완료 알림 — 설정 패널에 들어가지 않아도 새 버전을 인지할 수 있게.
-          role="status": 사용자가 요청하지 않은 알림이므로 polite(다른 배너들과 동형). */}
-      {/* QA19(D-LOW): 조건을 !== null 로 — 버전 문자열이 비어도(피드 이상) 알림 자체는 떠야 한다.
-          빈 버전이면 버전 미포함 문구로 폴백한다. */}
-      {updateReadyVersion !== null && !updateBannerDismissed && (
-        <div role="status" className="flex items-center gap-3 px-4 py-2 bg-green-50 dark:bg-green-900/20 border-b border-green-200 dark:border-green-800 text-sm text-green-700 dark:text-green-400">
+      {/* 자동 업데이트 알림 — 설정 패널에 들어가지 않아도 새 버전을 인지하고 처리할 수 있게.
+          role="status": 사용자가 요청하지 않은 알림이므로 polite(다른 배너들과 동형).
+          available(승인 대기) / downloading(진행) / downloaded(설치 대기) 세 단계를 모두 띄운다.
+          다운로드는 여전히 버튼을 눌러야 시작되고(종량제 보호), 설치도 승인이 필요하다. */}
+      {/* QA19(D-LOW): 버전 문자열이 비어도(피드 이상) 알림 자체는 떠야 한다 — 문구만 폴백. */}
+      {updateBanner && !updateBannerDismissed && (
+        <div
+          role="status"
+          className={updateBanner.kind === 'downloaded'
+            ? 'flex items-center gap-3 px-4 py-2 bg-green-50 dark:bg-green-900/20 border-b border-green-200 dark:border-green-800 text-sm text-green-700 dark:text-green-400'
+            : 'flex items-center gap-3 px-4 py-2 bg-blue-50 dark:bg-blue-900/20 border-b border-blue-200 dark:border-blue-800 text-sm text-blue-700 dark:text-blue-300'}
+        >
           <span className="flex-1 min-w-0 truncate">
-            {updateReadyVersion
-              ? tr('update.bannerReady', { version: updateReadyVersion })
-              : tr('update.bannerReadyNoVersion')}
+            {updateBanner.kind === 'available' && (updateBanner.version
+              ? tr('update.available', { version: updateBanner.version })
+              : tr('update.availableNoVersion'))}
+            {updateBanner.kind === 'downloading' && tr('update.downloading', { percent: updateBanner.percent })}
+            {updateBanner.kind === 'downloaded' && (updateBanner.version
+              ? tr('update.bannerReady', { version: updateBanner.version })
+              : tr('update.bannerReadyNoVersion'))}
           </span>
-          <button
-            type="button"
-            onClick={() => { void window.electronAPI.update.install(); }}
-            // QA19(A-MED): 설치는 앱을 종료시켜 진행 중인 요약·Q&A 를 폐기한다. 설정의 세션
-            // 삭제와 동일 등급의 파괴적 조작이므로 생성 중에는 막는다(이전엔 무게이트라
-            // 요약 도중 클릭 한 번으로 무경고 소실됐다).
-            disabled={updateInstallBusy}
-            title={updateInstallBusy ? tr('update.installBlockedBusy') : undefined}
-            className="shrink-0 px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-          >
-            {tr('update.installBtn')}
-          </button>
+          {updateBanner.kind === 'available' && (
+            <button
+              type="button"
+              // 다운로드는 앱을 종료시키지 않고 백그라운드로 받기만 하므로 작업 중에도 허용한다
+              // (설치만 파괴적 조작이라 게이트 대상).
+              onClick={() => { void window.electronAPI.update.download(); }}
+              className="shrink-0 px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
+            >
+              {tr('update.downloadBtn')}
+            </button>
+          )}
+          {updateBanner.kind === 'downloaded' && (
+            <button
+              type="button"
+              onClick={() => { void window.electronAPI.update.install(); }}
+              // QA19(A-MED): 설치는 앱을 종료시켜 진행 중인 요약·Q&A 를 폐기한다. 설정의 세션
+              // 삭제와 동일 등급의 파괴적 조작이므로 생성 중에는 막는다(이전엔 무게이트라
+              // 요약 도중 클릭 한 번으로 무경고 소실됐다).
+              disabled={updateInstallBusy}
+              title={updateInstallBusy ? tr('update.installBlockedBusy') : undefined}
+              className="shrink-0 px-3 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              {tr('update.installBtn')}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => {
@@ -557,8 +580,10 @@ export default function App() {
               }
             }}
             aria-label={tr('update.bannerDismiss')}
-            // QA19(D-LOW): green-500 on green-50 은 2.2:1 로 대비 미달 — 본문과 같은 green-700 로.
-            className="shrink-0 text-green-700 dark:text-green-400 hover:text-green-900 dark:hover:text-green-200"
+            // QA19(D-LOW): green-500 on green-50 은 2.2:1 로 대비 미달 — 본문과 같은 농도로.
+            className={updateBanner.kind === 'downloaded'
+              ? 'shrink-0 text-green-700 dark:text-green-400 hover:text-green-900 dark:hover:text-green-200'
+              : 'shrink-0 text-blue-700 dark:text-blue-300 hover:text-blue-900 dark:hover:text-blue-100'}
           >
             ✕
           </button>
