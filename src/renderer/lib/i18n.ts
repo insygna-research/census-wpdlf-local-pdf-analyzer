@@ -16,6 +16,11 @@ export const _translations = {
   'tabs.label': { ko: '열린 문서', en: 'Open documents' },
   'tabs.close': { ko: '{name} 탭 닫기', en: 'Close tab {name}' },
   'tabs.newTab': { ko: '새 문서 열기', en: 'Open a new document' },
+  // QA23(D-MED): 세션 저장이 꺼져 있으면 탭 전환이 현재 문서의 요약·Q&A 를 파기한다(저장할 곳이 없다).
+  'tabs.discardOnSwitchConfirm': {
+    ko: '세션 저장이 꺼져 있어 탭을 전환하면 현재 문서의 요약과 Q&A 가 사라집니다. 계속할까요?\n(설정 → 세션 데이터에서 저장을 켤 수 있습니다)',
+    en: 'Session saving is off, so switching tabs will discard this document’s summary and Q&A. Continue?\n(You can turn saving on in Settings → Session data.)',
+  },
   'tabs.switchFail': { ko: '원본 PDF 파일을 찾을 수 없어 탭을 전환할 수 없습니다. 파일이 이동/삭제되었다면 다시 열어주세요.', en: 'Could not switch tabs because the original PDF file was not found. If it was moved or deleted, please open it again.' },
   'common.renderError': { ko: '렌더링 오류가 발생했습니다.', en: 'A rendering error occurred.' },
   'common.imagePlaceholder': { ko: '[이미지]', en: '[image]' },
@@ -247,6 +252,10 @@ export const _translations = {
   // QA23: 기존 컬렉션 갱신은 멤버 목록을 **교체**한다(빠진 문서는 컬렉션에서 사라진다). 신규 저장과
   // 같은 문구로 알리면 사용자가 축소를 인지할 수 없으므로, 대상 이름과 결과 문서 수를 함께 알린다.
   'collection.savedUpdate': { ko: "'{name}' 컬렉션을 갱신했습니다 (문서 {count}개).", en: "Updated the collection '{name}' ({count} documents)." },
+  // QA23(D-LOW): 일시 I/O 오류를 "없음" 으로 단정하지 않는다(유일 사본이라 전량 소실로 읽힌다).
+  'collection.loadFailed': { ko: '저장된 컬렉션을 불러오지 못했습니다(일시적인 파일 접근 오류).', en: 'Could not load saved collections (temporary file access error).' },
+  // QA23(D-MED): 컬렉션 LRU 축출은 완전 무음이었다 — 세션 LRU(QA21)와 대칭으로 고지한다.
+  'collection.evictedNotice': { ko: '보관 한도를 넘어 오래된 컬렉션을 정리했습니다: {names}', en: 'Removed older collections beyond the storage limit: {names}' },
   'collection.saveFail': { ko: '컬렉션 저장에 실패했습니다.', en: 'Failed to save collection.' },
   'collection.savedTitle': { ko: '저장된 컬렉션', en: 'Saved collections' },
   'collection.savedEmpty': { ko: '저장된 컬렉션이 없습니다.', en: 'No saved collections.' },

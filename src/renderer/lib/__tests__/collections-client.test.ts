@@ -22,8 +22,15 @@ describe('collections-client', () => {
     expect(api.list).toHaveBeenCalledTimes(1);
   });
 
-  it('list: 실패 시 빈 배열 (throw 안 함)', async () => {
+  // QA23(D-LOW): 실패를 빈 배열로 수렴시키면 UI 가 "저장된 컬렉션이 없습니다" 를 **단정적으로**
+  // 표시해 사용자가 전량 소실로 읽는다(collections.json 은 유일 사본). null 로 구분한다.
+  it('list: 실패 시 null (빈 배열=정말 없음 과 구분, throw 안 함)', async () => {
     api.list.mockRejectedValue(new Error('ipc'));
+    expect(await listCollections()).toBeNull();
+  });
+
+  it('list: 정말 비어 있으면 빈 배열', async () => {
+    api.list.mockResolvedValue([]);
     expect(await listCollections()).toEqual([]);
   });
 

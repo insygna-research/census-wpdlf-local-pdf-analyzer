@@ -54,6 +54,20 @@ describe('CollectionsList', () => {
     expect(container.firstChild).toBeNull();
   });
 
+  // QA23(D-LOW): 일시 I/O 오류(EBUSY 등)를 "없음" 으로 단정하면 사용자는 전량 소실로 읽는다.
+  it('목록을 불러오지 못하면 "없음" 이 아니라 실패 사유와 재시도를 보여준다', async () => {
+    M.list.mockResolvedValue(null); // 클라이언트가 실패를 null 로 전달
+    const user = userEvent.setup();
+    render(<CollectionsList />);
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy());
+    expect(screen.queryByText(/컬렉션으로 저장해두면/), '없음 안내를 단정적으로 띄우면 안 된다').toBeNull();
+
+    // 재시도하면 정상 목록으로 회복된다.
+    M.list.mockResolvedValue([coll('c1', '강의 묶음', 3)]);
+    await user.click(screen.getByRole('button', { name: /다시 시도/ }));
+    await waitFor(() => expect(screen.getByText(/강의 묶음/)).toBeTruthy());
+  });
+
   it('저장된 컬렉션 목록 표시(이름 + 문서 수)', async () => {
     render(<CollectionsList />);
     await waitFor(() => expect(screen.getByText(/강의 묶음/)).toBeTruthy());

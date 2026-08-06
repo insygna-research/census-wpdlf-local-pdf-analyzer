@@ -129,9 +129,16 @@ async function saveFile(filePath: string, collections: SavedCollection[]): Promi
   await writeFileAtomic(filePath, JSON.stringify(file, null, 2));
 }
 
-/** 컬렉션 목록 — lastAccessed 내림차순(최근 먼저). */
+/**
+ * 컬렉션 목록 — lastAccessed 내림차순(최근 먼저).
+ *
+ * QA23(D-LOW, 조용한 오답): 이전에는 흡수형 loadFile 을 써 **일시 I/O 오류(EBUSY 등)도 빈
+ * 배열**로 수렴했다. 그러면 UI 가 "저장된 컬렉션이 없습니다 + 만드는 방법 안내"를 **단정적으로**
+ * 표시해 사용자는 전량 소실로 읽는다(collections.json 이 유일 사본이라 더 그렇다). 부재·손상은
+ * 종전대로 빈 목록이지만, 일시 오류는 전파해 호출자가 "불러오지 못했다"로 구분하게 한다.
+ */
 export async function listCollections(filePath: string): Promise<SavedCollection[]> {
-  const all = await loadFile(filePath);
+  const all = await readFile(filePath, true);
   return all.sort((a, b) => b.lastAccessed.localeCompare(a.lastAccessed));
 }
 
@@ -144,7 +151,7 @@ export async function saveCollection(
   filePath: string,
   input: CollectionSaveInput,
   now: number,
-): Promise<{ ok: boolean; id?: string }> {
+): Promise<{ ok: boolean; id?: string; evicted?: string[] }> {
   const docHashes = sanitizeHashes(input?.docHashes);
   const name = typeof input?.name === 'string' ? input.name.trim().slice(0, COLLECTION_NAME_MAX) : '';
   if (docHashes.length === 0 || name.length === 0) return { ok: false }; // 빈 멤버/이름은 거부
@@ -165,19 +172,21 @@ export async function saveCollection(
     }
     // LRU: 개수 초과 시 가장 오래된 것부터 제거. 단 방금 저장/갱신한 id 는 절대 제거 대상에서
     // 제외(R47: 동률 lastAccessed 에서 신규 항목이 evict 돼 ok:true 인데 디스크엔 없는 문제 차단).
+    // QA23(D-MED): 축출은 **완전 무음**이었다 — 세션 LRU 는 QA21 에서 evicted 이름을 반환해
+    // 고지하게 했는데 컬렉션만 빠져 있었다. 저장된 컬렉션이 조용히 사라지면 회수 경로가 없다.
+    const evicted: string[] = [];
     if (collections.length > COLLECTION_MAX_COUNT) {
       const evictCount = collections.length - COLLECTION_MAX_COUNT;
-      const evictIds = new Set(
-        [...collections]
-          .filter((c) => c.id !== id)
-          .sort((a, b) => a.lastAccessed.localeCompare(b.lastAccessed))
-          .slice(0, evictCount)
-          .map((c) => c.id),
-      );
+      const victims = [...collections]
+        .filter((c) => c.id !== id)
+        .sort((a, b) => a.lastAccessed.localeCompare(b.lastAccessed))
+        .slice(0, evictCount);
+      const evictIds = new Set(victims.map((c) => c.id));
+      evicted.push(...victims.map((c) => c.name));
       collections = collections.filter((c) => !evictIds.has(c.id));
     }
     await saveFile(filePath, collections);
-    return { ok: true, id };
+    return { ok: true, id, ...(evicted.length > 0 ? { evicted } : {}) };
   } catch (err) {
     console.warn('[collections] save failed:', (err as Error)?.message);
     return { ok: false };

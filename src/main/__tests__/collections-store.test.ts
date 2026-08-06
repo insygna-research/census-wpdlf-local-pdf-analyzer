@@ -109,6 +109,25 @@ describe('saveCollection', () => {
     expect(file.collections.some((c) => c.name === 'c0')).toBe(false);
   });
 
+  // QA23(D-MED): 축출이 **완전 무음**이었다 — 세션 LRU 는 QA21 에서 evicted 이름을 반환해
+  // 고지하게 했는데 컬렉션만 빠져 있었다. 저장된 컬렉션이 조용히 사라지면 회수 경로가 없다.
+  it('축출된 컬렉션 이름을 반환한다 (무음 소멸 방지)', async () => {
+    const hashFor = (i: number) => i.toString(16).padStart(2, '0').repeat(32);
+    for (let i = 0; i < COLLECTION_MAX_COUNT; i++) {
+      await saveCollection(FILE, { name: `c${i}`, docHashes: [hashFor(i)] }, T0 + i * 1000);
+    }
+    // 상한을 넘기는 한 건 추가 → 가장 오래된 c0 이 축출된다.
+    const r = await saveCollection(FILE, { name: 'new', docHashes: [hashFor(90)] }, T0 + 999_000);
+    expect(r.ok).toBe(true);
+    expect(r.evicted).toEqual(['c0']);
+  });
+
+  it('축출이 없으면 evicted 를 싣지 않는다 (과잉 통지 방지)', async () => {
+    const r = await saveCollection(FILE, { name: 'only', docHashes: [H('a')] }, T0);
+    expect(r.ok).toBe(true);
+    expect(r.evicted).toBeUndefined();
+  });
+
   it('R47: 동률 lastAccessed 에서도 방금 저장한 항목은 evict 되지 않음', async () => {
     const hashFor = (i: number) => i.toString(16).padStart(2, '0').repeat(32);
     // 상한까지 모두 같은 시각(T0)으로 채움

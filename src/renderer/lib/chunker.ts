@@ -11,12 +11,33 @@ import type { Chapter } from '../types';
  * 한쪽만 수정 시 불일치가 발생하지 않도록 단일 구현을 공유.
  */
 export function estimateCharsPerToken(text: string): number {
-  const sample = text.slice(0, 2000);
+  // QA23(C-LOW): 이전에는 `text.slice(0, 2000)` — **문서 앞부분만** 봤다. 국문 논문·보고서는
+  // 표지·영문 초록이 앞에 오는 경우가 흔해 CJK 비율이 0 으로 측정되고, 청크가 최대 2.6배
+  // (1.5 → 4.0 chars/token) 커져 LLM 컨텍스트를 넘길 수 있었다 — 그 초과를 막으려고 만든
+  // 함수인데 표본 편향이 남아 있었다. 문서 전체에서 **균등 간격**으로 표집한다(비용은 동일).
+  const sample = sampleEvenly(text, 2000);
   // 한글 완성형 + 자모 + 일본어 히라가나/가타카나 + CJK 통합한자
   const cjkChars = (sample.match(/[\uAC00-\uD7AF\u3130-\u318F\u1100-\u11FF\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF]/g) || []).length;
   const cjkRatio = cjkChars / Math.max(sample.length, 1);
   // CJK 비율이 높을수록 토큰당 문자 수 감소
   return Math.max(1.5, 4 - (cjkRatio * 2.5)); // 100% CJK → 1.5, 0% CJK → 4
+}
+
+/**
+ * 문서 전체에서 균등 간격으로 최대 `size` 자를 모아 표본을 만든다(순수).
+ * 짧은 텍스트는 그대로 반환하므로 종전 동작과 동일하다.
+ */
+function sampleEvenly(text: string, size: number): string {
+  if (text.length <= size) return text;
+  // 10개 구간에서 고르게 뽑아 앞·중간·뒤가 모두 반영되게 한다.
+  const buckets = 10;
+  const per = Math.floor(size / buckets);
+  const stride = Math.floor(text.length / buckets);
+  let out = '';
+  for (let i = 0; i < buckets; i++) {
+    out += text.slice(i * stride, i * stride + per);
+  }
+  return out;
 }
 
 /**
@@ -197,8 +218,15 @@ function chunkTextWithOverlapOffsets(
       const parts = splitByCodepoint(trimmed, effectiveMax);
       const bodyLen = bodyEnd - bodyStart;
       for (let k = 0; k < parts.length; k++) {
-        const part = parts[k];
-        if (part === undefined) continue;
+        const rawPart = parts[k];
+        if (rawPart === undefined) continue;
+        // QA23(C-LOW): 오버랩은 **flush 사이**(단락 경계)에만 적용되고 이 codepoint 분할에는
+        // 없었다. 빈 줄 없는 긴 페이지(표·OCR 결과의 전형)는 전부 이 경로로 잘리므로, 그 경계에
+        // 걸친 문장은 **어느 청크에도 온전히 담기지 않는다** — RAG 가 근거를 못 찾아 "맞아 보이지만
+        // 틀린 답"이 된다. 직전 조각의 꼬리를 앞에 붙여 경계를 덮는다(문장/단어 경계 우선).
+        const part = k === 0
+          ? rawPart
+          : tailAtBoundary(parts[k - 1] ?? '', overlapChars) + rawPart;
         const partBodyStart = bodyStart + Math.floor((k * bodyLen) / parts.length);
         const partBodyEnd = k === parts.length - 1
           ? bodyEnd

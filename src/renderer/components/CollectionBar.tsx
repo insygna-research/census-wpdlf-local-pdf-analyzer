@@ -120,6 +120,11 @@ export function CollectionBar() {
           ? t('collection.savedUpdate', { name, count: String(memberHashesToSave.length) })
           : t('collection.saved'),
       });
+      // QA23(D-MED): 보관 한도 초과로 오래된 컬렉션이 지워졌다면 알린다 — 이전에는 완전 무음이라
+      // 사용자는 나중에 목록에서 사라진 것을 발견할 뿐 이유를 알 수 없었다(세션 LRU 와 대칭).
+      if (r.evicted && r.evicted.length > 0) {
+        useAppStore.getState().setNotice({ message: t('collection.evictedNotice', { names: r.evicted.join(', ') }) });
+      }
     } else {
       // 실패는 setError(닫기 전까지 잔존)로 통일 — notice(자동소멸)면 놓치기 쉬움(R47)
       useAppStore.getState().setError({ code: 'COLLECTION_SAVE_FAIL', message: t('collection.saveFail') });

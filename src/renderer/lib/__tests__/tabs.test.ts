@@ -204,6 +204,78 @@ describe('switchToTab', () => {
     expect(key, 'OCR 문서면 OCR 부분 실패 문구여야 한다').toBe('pdf.ocrPartialFailNotice');
   });
 
+  // QA23(D-MED): 영속화 OFF + 다중 탭이면 전환이 현재 문서의 요약·Q&A 를 **경고 없이** 파기했다
+  // (저장할 곳이 없어 persistCurrentSession 은 no-op, 대상은 재파싱 경로로 가며 store 초기화).
+  // "디스크에 안 쓴다"는 설정이 "탭을 바꾸면 작업이 사라진다"를 뜻하지는 않는다.
+  describe('영속화 OFF 전환 경고', () => {
+    const withPersistOff = () => {
+      useAppStore.setState({
+        settings: { ...useAppStore.getState().settings, persistSessions: false },
+        summary: { id: 's', documentId: 'd', type: 'full', content: '요약본', model: 'm', provider: 'ollama', createdAt: new Date(), durationMs: 1 },
+        summaryStream: '요약본',
+      });
+    };
+
+    it('잃을 작업이 있으면 확인을 묻고, 취소하면 전환하지 않는다', async () => {
+      seedTabs(['/docs/a.pdf', '/docs/b.pdf'], '/docs/a.pdf');
+      withPersistOff();
+      const confirmSpy = vi.fn(() => false);
+      vi.stubGlobal('confirm', confirmSpy);
+      try {
+        await switchToTab('/docs/b.pdf');
+        expect(confirmSpy).toHaveBeenCalledTimes(1);
+        expect(M.openPath, '취소했는데 전환이 진행되면 안 된다').not.toHaveBeenCalled();
+        expect(useAppStore.getState().summary?.content, '요약이 남아 있어야 한다').toBe('요약본');
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('확인하면 종전대로 전환한다', async () => {
+      seedTabs(['/docs/a.pdf', '/docs/b.pdf'], '/docs/a.pdf');
+      withPersistOff();
+      vi.stubGlobal('confirm', vi.fn(() => true));
+      try {
+        await switchToTab('/docs/b.pdf');
+        expect(M.openPath).toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('잃을 작업이 없으면 묻지 않는다 (과잉 확인 방지)', async () => {
+      seedTabs(['/docs/a.pdf', '/docs/b.pdf'], '/docs/a.pdf');
+      useAppStore.setState({
+        settings: { ...useAppStore.getState().settings, persistSessions: false },
+        summary: null, summaryStream: '', qaMessages: [],
+      });
+      const confirmSpy = vi.fn(() => true);
+      vi.stubGlobal('confirm', confirmSpy);
+      try {
+        await switchToTab('/docs/b.pdf');
+        expect(confirmSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+
+    it('영속화가 켜져 있으면 묻지 않는다 (기본 경로 무회귀)', async () => {
+      seedTabs(['/docs/a.pdf', '/docs/b.pdf'], '/docs/a.pdf');
+      useAppStore.setState({
+        settings: { ...useAppStore.getState().settings, persistSessions: true },
+        summary: { id: 's', documentId: 'd', type: 'full', content: '요약본', model: 'm', provider: 'ollama', createdAt: new Date(), durationMs: 1 },
+      });
+      const confirmSpy = vi.fn(() => true);
+      vi.stubGlobal('confirm', confirmSpy);
+      try {
+        await switchToTab('/docs/b.pdf');
+        expect(confirmSpy).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
   it('생성 중 전환 차단', async () => {
     seedTabs(['/docs/a.pdf', '/docs/b.pdf'], '/docs/a.pdf');
     useAppStore.setState({ isGenerating: true });

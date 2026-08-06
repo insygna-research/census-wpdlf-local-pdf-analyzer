@@ -82,6 +82,29 @@ function safeId(): string {
  * 재사용해 즉시 전환한다. 뷰어용 원본 바이트는 상주시키지 않고(pdfBytes 비상주, 메모리 M1)
  * 인용 클릭 시 PdfViewerPanel 이 디스크에서 lazy 로드한다.
  */
+/**
+ * 세션 영속화가 꺼져 있으면 탭 전환이 **현재 문서의 요약·Q&A 를 되돌릴 수 없이 파기**한다 —
+ * 저장할 곳이 없으므로 persistCurrentSession 은 no-op 이고, 전환 대상은 세션이 없어 재파싱
+ * 경로로 가면서 store 를 초기화한다.
+ *
+ * QA23(D-MED): 이 손실이 **경고 없이** 일어났다. 사용자가 "디스크에 안 쓴다"로 이해한 설정이
+ * "탭을 바꾸면 작업이 사라진다"를 뜻하지는 않는다. 세션 전체 삭제(설정)와 같은 등급의 파괴적
+ * 조작이므로 같은 방식(확인 대화상자)으로 묻는다. 잃을 것이 없으면(요약·대화 모두 없음) 묻지 않는다.
+ *
+ * @returns 계속 진행해도 되면 true.
+ */
+function confirmDiscardIfNotPersisted(): boolean {
+  const s = useAppStore.getState();
+  if (s.settings.persistSessions) return true;
+  const hasWork = !!s.summary || s.summaryStream.trim().length > 0 || s.qaMessages.length > 0;
+  if (!hasWork) return true;
+  try {
+    return window.confirm(t('tabs.discardOnSwitchConfirm'));
+  } catch {
+    return true; // confirm 이 없는 환경(테스트 등) — 차단하지 않는다
+  }
+}
+
 async function openTabTarget(tab: OpenTab): Promise<boolean> {
   // ① 세션 우선: 콘텐츠 해시로 저장된 분석 상태(텍스트/요약/Q&A/인덱스)를 즉시 복원
   if (tab.docHash) {
@@ -158,6 +181,8 @@ export async function switchToTab(filePath: string): Promise<void> {
   if (isTabSwitchBlocked()) return;
   const tab = findTab(filePath);
   if (!tab) return;
+  // QA23(D-MED): 영속화 OFF 면 전환이 현재 요약·Q&A 를 되돌릴 수 없이 파기한다 — 묻고 진행한다.
+  if (!confirmDiscardIfNotPersisted()) return;
 
   // QA6-C M2: 첫 await 이전 동기 세팅 — 진행 중 두 번째 전환/닫기 재진입 차단. finally 해제.
   setTabSwitching(true);

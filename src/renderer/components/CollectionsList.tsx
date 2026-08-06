@@ -14,6 +14,9 @@ export function CollectionsList() {
   const tr = useT();
   const persistEnabled = useAppStore((s) => s.settings.persistSessions);
   const [items, setItems] = useState<SavedCollection[]>([]);
+  // QA23(D-LOW): 목록을 **불러오지 못한 것**과 **정말 없는 것**을 구분한다. 이전에는 둘 다 빈
+  // 배열이라 일시 I/O 오류 한 번에 "저장된 컬렉션이 없습니다"를 단정적으로 보여줬다.
+  const [loadFailed, setLoadFailed] = useState(false);
   const [busy, setBusy] = useState<string | null>(null);
   const mountedRef = useRef(true);
   // StrictMode(dev) 더블 마운트 가드: 재마운트 시 true 로 리셋하지 않으면 첫 언마운트가 false 로
@@ -25,7 +28,14 @@ export function CollectionsList() {
 
   const refresh = useCallback(async () => {
     const list = await listCollections();
-    if (mountedRef.current) setItems(Array.isArray(list) ? list : []);
+    if (!mountedRef.current) return;
+    if (list === null) {
+      // 읽기 실패 — 기존 목록을 지우지 않는다(방금까지 보이던 항목이 사라지면 더 혼란스럽다).
+      setLoadFailed(true);
+      return;
+    }
+    setLoadFailed(false);
+    setItems(list);
   }, []);
 
   useEffect(() => {
@@ -74,13 +84,28 @@ export function CollectionsList() {
   if (!persistEnabled) return null;
 
   // 발견성(R47 UX): 컬렉션이 없을 때도 한 줄 안내로 기능 존재/생성 방법을 알린다.
+  // QA23(D-LOW): 단 **불러오지 못한 경우**는 "없음"으로 단정하지 않는다 — 사용자가 전량 소실로
+  // 읽는다(collections.json 은 유일 사본). 사유와 재시도를 준다.
   if (items.length === 0) {
     return (
       <div className="w-full max-w-2xl mx-auto mt-6">
         <h2 className="text-sm font-semibold text-gray-500 dark:text-gray-400 mb-2 px-1">
           {tr('collection.savedTitle')}
         </h2>
-        <p className="text-xs text-gray-600 dark:text-gray-400 px-1 py-2">{tr('collection.savedEmptyHint')}</p>
+        {loadFailed ? (
+          <div className="flex items-center gap-2 px-1 py-2">
+            <p role="alert" className="text-xs text-amber-700 dark:text-amber-400">{tr('collection.loadFailed')}</p>
+            <button
+              type="button"
+              onClick={() => { void refresh(); }}
+              className="text-xs underline text-blue-600 dark:text-blue-400"
+            >
+              {tr('common.retry')}
+            </button>
+          </div>
+        ) : (
+          <p className="text-xs text-gray-600 dark:text-gray-400 px-1 py-2">{tr('collection.savedEmptyHint')}</p>
+        )}
       </div>
     );
   }

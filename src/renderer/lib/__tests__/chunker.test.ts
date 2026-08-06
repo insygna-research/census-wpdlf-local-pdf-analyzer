@@ -1,6 +1,69 @@
 import { describe, it, expect } from 'vitest';
-import { chunkText, chunkChapters, chunkTextWithOverlap, chunkTextWithOverlapByPage } from '../chunker';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// QA23(C-LOW ×2): 조용한 품질 저하 두 건.
+//  (1) 한글 비율 추정이 **앞 2000자만** 본다 — 영문 초록/표지가 앞에 오는 국문 논문에서 CJK
+//      비율이 과소평가돼 청크가 최대 2.6배 커지고 LLM 컨텍스트를 넘길 수 있다. 그 초과를
+//      막으려고 만든 함수인데 샘플 편향이 남아 있었다.
+//  (2) 페이지 **내부** 분할(splitByCodepoint)에는 오버랩이 적용되지 않는다 — 답이 그 경계에
+//      걸리면 어느 청크에도 온전히 담기지 않아 RAG 가 근거를 못 찾는다("맞아 보이지만 틀린 답").
+// ─────────────────────────────────────────────────────────────────────────────
+import { chunkText, chunkChapters, chunkTextWithOverlap, chunkTextWithOverlapByPage, estimateCharsPerToken } from '../chunker';
 import type { Chapter } from '../../types';
+
+describe('페이지 내부 분할의 오버랩 (QA23)', () => {
+  // 픽스처는 **고유 토큰**이어야 한다 — 반복 패턴이면 어떤 부분문자열도 어디에나 있어
+  // 오버랩 검사가 공허해진다(첫 시도가 그래서 수정 전에도 통과했다).
+  const uniqueBody = (n: number) => Array.from({ length: n }, (_, i) => `항목${String(i).padStart(4, '0')}값`).join(' ');
+
+  it('거대 단일 단락을 쪼갤 때도 조각 사이에 오버랩이 있다', () => {
+    // 빈 줄 없는 긴 페이지(표·OCR 결과의 전형) — 단락 경계가 없어 codepoint 분할로 잘린다.
+    // 오버랩이 0 이면 그 경계에 걸친 문장은 **어느 청크에도 온전히 담기지 않아** RAG 가 못 찾는다.
+    const text = uniqueBody(500);
+    const chunks = chunkTextWithOverlap(text, 500);
+    expect(chunks.length).toBeGreaterThan(1);
+    for (let i = 1; i < chunks.length; i++) {
+      const prevTail = chunks[i - 1]!.slice(-30);
+      expect(chunks[i]!.startsWith(prevTail.slice(0, 10)) || chunks[i]!.includes(prevTail.slice(-15)),
+        `청크 ${i - 1}→${i} 경계에 오버랩이 없다`).toBe(true);
+    }
+  });
+
+  it('조각 경계에 걸친 문장이 최소 한 청크에는 온전히 담긴다', () => {
+    // 경계 위치를 모르므로, 문서 전체에 고유 문장을 촘촘히 심고 **전부** 온전히 담기는지 본다.
+    const sentences = Array.from({ length: 200 }, (_, i) => `측정값${String(i).padStart(3, '0')}은 정상범위였다.`);
+    const text = sentences.join(' ');
+    const chunks = chunkTextWithOverlap(text, 300);
+    const missing = sentences.filter((s) => !chunks.some((c) => c.includes(s)));
+    expect(missing, `경계에 걸려 어느 청크에도 온전히 담기지 않은 문장: ${missing.slice(0, 3).join(' / ')}`).toEqual([]);
+  });
+});
+
+describe('estimateCharsPerToken — 표본 편향 (QA23)', () => {
+  it('앞부분이 영문이어도 문서 전체의 한글 비율을 반영한다', () => {
+    // 국문 논문의 전형: 표지·영문 초록(2500자) 뒤에 한글 본문이 이어진다.
+    const englishHead = 'This paper presents a method for evaluating operating system schedulers. '.repeat(35);
+    const koreanBody = '본 논문은 운영체제 스케줄러를 평가하는 방법을 제시한다. '.repeat(200);
+    const doc = englishHead + koreanBody;
+    const cpt = estimateCharsPerToken(doc);
+    // 기준선: 문서 전체를 다 본다면 얼마인가(같은 공식, 표본만 전체).
+    const cjkAll = (doc.match(/[가-힣]/g) || []).length;
+    const whole = Math.max(1.5, 4 - (cjkAll / doc.length) * 2.5);
+    // 앞 2000자만 보면 4.0(영문 값)이 나온다 — 전체 기준선에 가까워야 한다.
+    expect(cpt).toBeLessThan(4);
+    expect(Math.abs(cpt - whole), `표본 추정 ${cpt} 이 전체 기준선 ${whole} 과 크게 어긋난다`).toBeLessThan(0.4);
+  });
+
+  it('실제로 영문 문서면 영문 값을 유지한다 (과잉 보정 방지)', () => {
+    const english = 'The quick brown fox jumps over the lazy dog. '.repeat(300);
+    expect(estimateCharsPerToken(english)).toBeGreaterThan(3.5);
+  });
+
+  it('짧은 텍스트도 종전대로 동작한다', () => {
+    expect(estimateCharsPerToken('한글 문서입니다')).toBeLessThan(2.5);
+    expect(estimateCharsPerToken('english text')).toBeGreaterThan(3.5);
+  });
+});
 
 describe('chunkText', () => {
   it('짧은 텍스트는 하나의 청크로 반환한다', () => {
