@@ -1024,6 +1024,9 @@ export function SettingsPanel() {
               {updateState.status === 'downloaded' && (updateState.newVersion
                 ? t('update.downloaded', { version: updateState.newVersion })
                 : t('update.bannerReadyNoVersion'))}
+              {/* QA23: 설치 요청 ~ 종료 사이 구간. 이 표시가 없으면 버튼이 사라진 채 아무 설명이
+                  없어 사용자가 무슨 일이 일어났는지 알 수 없다. */}
+              {updateState.status === 'installing' && t('update.installing')}
             </p>
 
             {/* 설치 대기 중에도 직전 실패(설치 시작 실패 등)를 함께 보여준다 — main 이 downloaded

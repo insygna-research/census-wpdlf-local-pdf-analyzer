@@ -21,6 +21,8 @@ export type UpdateEvent =
   | { type: 'download-started' }
   | { type: 'progress'; percent: number }
   | { type: 'downloaded'; version: string }
+  /** 설치 요청 접수(QA23) — 실제 종료까지의 구간을 상태로 드러낸다. */
+  | { type: 'install-started' }
   | { type: 'error'; errorKey: string };
 
 /**
@@ -68,7 +70,9 @@ export function canCheck(status: UpdateStatus): boolean {
   return status !== 'unsupported'
     && status !== 'checking'
     && status !== 'downloading'
-    && status !== 'downloaded';
+    && status !== 'downloaded'
+    // 설치 진행 중 확인은 무의미하고(곧 종료된다) 상태를 덮어 설치 자격을 잃게 만든다.
+    && status !== 'installing';
 }
 
 /**
@@ -81,7 +85,11 @@ export function canDownload(status: UpdateStatus, newVersion: string | null = nu
   return status === 'error' && newVersion !== null;
 }
 
-/** 재시작+설치가 가능한가 — 다운로드가 끝난 상태에서만. */
+/**
+ * 재시작+설치가 가능한가 — 다운로드가 끝난 상태에서만.
+ * `installing` 은 제외한다: 진행 중 재클릭은 인스톨러 이중 spawn 위험이 있고, 이제는 상태가
+ * UI 에 드러나므로(설치 중 표시) 조용히 폐기되는 클릭도 없다(QA23 B-MED).
+ */
 export function canInstall(status: UpdateStatus): boolean {
   return status === 'downloaded';
 }
@@ -197,15 +205,23 @@ export function nextUpdateState(prev: UpdateState, event: UpdateEvent): UpdateSt
       if (prev.status === 'downloaded' && prev.newVersion === event.version) return prev;
       return { ...prev, status: 'downloaded', newVersion: event.version, percent: 100, errorKey: null };
 
+    case 'install-started':
+      // 설치 요청 ~ 실제 종료 사이의 구간을 상태로 표현한다(QA23 B-MED). 이게 없으면 UI 가
+      // "설치 준비됨" 그대로라 사용자가 버튼을 다시 누르고, 그 클릭은 내부 잠금에 조용히 폐기된다.
+      if (prev.status !== 'downloaded') return prev; // canInstall 과 동일 전제
+      return { ...prev, status: 'installing', errorKey: null };
+
     case 'error':
       if (prev.status === 'error' && prev.errorKey === event.errorKey) return prev;
       // QA19: 설치 대기분은 에러로도 잃지 않는다. 백그라운드 확인 실패나 설치 시작 실패가
       // 이미 받아둔 인스톨러의 설치 자격까지 회수하면 사용자는 재다운로드 외에 길이 없다.
       // status 는 downloaded 로 유지하되 errorKey 는 실어 보내, UI 가 "설치 가능 + 직전 실패
       // 사유"를 함께 보여줄 수 있게 한다(설치 시작 실패를 무음으로 삼키지 않기 위함).
-      if (prev.status === 'downloaded') {
-        if (prev.errorKey === event.errorKey) return prev;
-        return { ...prev, errorKey: event.errorKey };
+      // QA23: 설치 시도(installing)가 실패한 경우도 같은 이유로 downloaded 로 **되돌린다** —
+      // 인스톨러는 디스크에 그대로 있으므로 재시도가 유일하게 합리적인 다음 행동이다.
+      if (prev.status === 'downloaded' || prev.status === 'installing') {
+        if (prev.status === 'downloaded' && prev.errorKey === event.errorKey) return prev;
+        return { ...prev, status: 'downloaded', errorKey: event.errorKey };
       }
       // newVersion 은 보존 — 다운로드 실패 후 사용자가 어떤 버전을 시도했는지 표시하고,
       // 재확인 없이 재시도할 수 있게 한다.

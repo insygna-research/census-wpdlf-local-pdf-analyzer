@@ -520,6 +520,11 @@ export const _translations = {
   'update.available': { ko: '새 버전을 사용할 수 있습니다 ({version})', en: 'A new version is available ({version})' },
   'update.availableNoVersion': { ko: '새 버전을 사용할 수 있습니다.', en: 'A new version is available.' },
   'update.downloadBtn': { ko: '다운로드', en: 'Download' },
+  // QA23: 설치 요청 ~ 종료 사이 구간. 이전에는 상태가 없어 버튼이 "재시작하여 설치" 그대로였고,
+  // 재클릭이 내부 잠금에 조용히 폐기됐다(피드백 0).
+  'update.installing': { ko: '설치를 준비하고 있습니다… 잠시 후 앱이 재시작됩니다.', en: 'Preparing to install… the app will restart shortly.' },
+  'update.errorGeneric': { ko: '업데이트에 실패했습니다.', en: 'The update failed.' },
+  'update.retryBtn': { ko: '다시 시도', en: 'Retry' },
   'update.downloading': { ko: '다운로드 중... {percent}%', en: 'Downloading... {percent}%' },
   // QA19(D-MED): 라이브 영역(role="status")에는 퍼센트를 넣지 않는다 — 정수 1단위로 갱신돼
   // 스크린리더가 최대 100회 낭독한다. 숫자는 progressbar 의 aria-valuenow 와 시각 텍스트에만.

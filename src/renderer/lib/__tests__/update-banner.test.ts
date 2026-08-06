@@ -32,12 +32,37 @@ describe('selectUpdateBanner — 어떤 상태에서 배너를 띄우는가', ()
   });
 
   it('downloaded: 설치 준비 알림(종전 동작 보존)', () => {
-    expect(selectUpdateBanner(state('downloaded'))).toEqual({ kind: 'downloaded', version: '0.31.39' });
+    expect(selectUpdateBanner(state('downloaded')))
+      .toEqual({ kind: 'downloaded', version: '0.31.39', errorKey: null });
   });
 
-  // 아래 상태들에서 배너가 뜨면 매 기동 깜빡이거나(checking) 요청하지 않은 실패로 화면을
-  // 어지럽힌다(error). 설정 패널이 담당하는 영역.
-  it.each<UpdateStatus>(['unsupported', 'idle', 'checking', 'not-available', 'error'])(
+  it('installing: 설치 진행을 표시한다 (QA23 — 재클릭이 조용히 폐기되지 않도록)', () => {
+    expect(selectUpdateBanner(state('installing'))).toEqual({ kind: 'installing' });
+  });
+
+  // QA23(B-MED): 설치 시도가 실패해도 status 는 downloaded 로 유지된다(인스톨러가 디스크에
+  // 남아 재시도가 합리적이므로). 그때 errorKey 를 싣지 않으면 배너가 "설치 준비되었습니다"만
+  // 반복해 **실패가 완전 무음**이 된다.
+  it('downloaded + errorKey: 직전 설치 실패 사유를 함께 싣는다', () => {
+    expect(selectUpdateBanner(state('downloaded', { errorKey: 'updateInstallFailed' })))
+      .toEqual({ kind: 'downloaded', version: '0.31.39', errorKey: 'updateInstallFailed' });
+  });
+
+  // QA23(A-MED): 이전에는 error 에서 null 을 반환해 **배너가 사유 없이 사라졌다** — 다운로드
+  // 실패 시 사용자는 끝난 건지 실패한 건지 알 수 없고, 재시도의 유일한 메인 화면 진입점도
+  // 사라져 다시 설정을 열어야 했다(이 배너가 없애려던 바로 그 문제).
+  it('error: 사유와 재시도 가능 여부를 남긴다', () => {
+    expect(selectUpdateBanner(state('error', { errorKey: 'updateNetwork', newVersion: '0.31.39' })))
+      .toEqual({ kind: 'error', errorKey: 'updateNetwork', canRetryDownload: true });
+  });
+
+  it('error + 확인된 버전 없음: 재시도 불가로 표시(재확인이 먼저다)', () => {
+    expect(selectUpdateBanner(state('error', { errorKey: 'updateNetwork', newVersion: null })))
+      .toEqual({ kind: 'error', errorKey: 'updateNetwork', canRetryDownload: false });
+  });
+
+  // 아래 상태들에서 배너가 뜨면 매 기동 깜빡이거나(checking) 요청하지 않은 소음이 된다.
+  it.each<UpdateStatus>(['unsupported', 'idle', 'checking', 'not-available'])(
     '%s 는 배너를 띄우지 않는다',
     (status) => {
       expect(selectUpdateBanner(state(status))).toBeNull();
@@ -51,7 +76,8 @@ describe('selectUpdateBanner — 어떤 상태에서 배너를 띄우는가', ()
 
   it('버전 문자열이 비어도 배너는 뜬다 — 문구만 폴백하도록 null 로 정규화 (QA19 정책)', () => {
     expect(selectUpdateBanner(state('available', { newVersion: '' }))).toEqual({ kind: 'available', version: null });
-    expect(selectUpdateBanner(state('downloaded', { newVersion: null }))).toEqual({ kind: 'downloaded', version: null });
+    expect(selectUpdateBanner(state('downloaded', { newVersion: null })))
+      .toEqual({ kind: 'downloaded', version: null, errorKey: null });
   });
 
   it('진행률은 0~100 정수로 정규화한다 (피드/이벤트 이상값 방어)', () => {
@@ -99,8 +125,27 @@ describe('shouldResetDismiss — 닫아둔 배너를 다시 띄울 때', () => {
   });
 
   it('단계가 바뀌면 다시 띄운다 — available 을 닫은 것이 설치 준비 알림까지 버린다는 뜻은 아니다', () => {
-    expect(shouldResetDismiss(avail, { kind: 'downloaded', version: '0.31.39' })).toBe(true);
+    expect(shouldResetDismiss(avail, { kind: 'downloaded', version: '0.31.39', errorKey: null })).toBe(true);
     expect(shouldResetDismiss(avail, { kind: 'downloading', percent: 1 })).toBe(true);
+  });
+
+  // QA23(B-MED): 설치 실패는 kind·version 을 바꾸지 않는다(downloaded 유지). 그래서 배너를
+  // 닫아둔 사용자는 실패를 영영 볼 수 없었다 — 에러의 유일한 표시처가 설정 패널이라
+  // "설정을 열어야만 안다" 로 되돌아간다. 새 실패 사유는 닫아둔 배너를 다시 띄운다.
+  it('같은 단계라도 새 실패 사유가 붙으면 다시 띄운다', () => {
+    const ready: UpdateBanner = { kind: 'downloaded', version: '0.31.39', errorKey: null };
+    expect(shouldResetDismiss(ready, { kind: 'downloaded', version: '0.31.39', errorKey: 'updateInstallFailed' }))
+      .toBe(true);
+  });
+
+  it('실패 사유가 그대로면 되살리지 않는다 (닫으면 조용해야 한다)', () => {
+    const failed: UpdateBanner = { kind: 'downloaded', version: '0.31.39', errorKey: 'updateInstallFailed' };
+    expect(shouldResetDismiss(failed, { ...failed })).toBe(false);
+  });
+
+  it('실패가 해소되는 전이는 되살리지 않는다 (알릴 새 사실이 없다)', () => {
+    const failed: UpdateBanner = { kind: 'downloaded', version: '0.31.39', errorKey: 'updateInstallFailed' };
+    expect(shouldResetDismiss(failed, { kind: 'downloaded', version: '0.31.39', errorKey: null })).toBe(false);
   });
 
   it('같은 단계라도 새 버전이면 다시 띄운다 (이전 버전의 닫기가 다음 알림을 삼키지 않게)', () => {

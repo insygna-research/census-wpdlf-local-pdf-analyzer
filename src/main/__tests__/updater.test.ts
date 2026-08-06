@@ -267,6 +267,59 @@ describe('install — 데이터 손실 방어', () => {
       }
     });
 
+    // QA23(B-MED, 실데이터 손실): 롤백이 15초 백스톱에만 걸려 있었다. electron-updater 는
+    // 인스톨러 경로 부재 등에서 **t≈0 에 error 를 발화**하는데, 그 15초 동안 flush 표식이 남아
+    // 사용자의 가장 개연성 높은 반응(창 X 닫기)이 종료 flush 를 통째로 우회했다. 신호가 오면
+    // 기다리지 않는다.
+    it('설치 중 error 이벤트가 오면 즉시 롤백한다 (15초 대기 없음)', async () => {
+      vi.useFakeTimers();
+      try {
+        const onInstallAborted = vi.fn();
+        const ctx = setup({ onInstallAborted });
+        await toDownloaded(ctx);
+        await ctx.service.install();
+        expect(onInstallAborted).not.toHaveBeenCalled();
+
+        ctx.emit('error', new Error('No update filepath provided'));
+        expect(onInstallAborted, '실패 신호를 받고도 15초를 기다리면 그 사이 델타가 소실된다').toHaveBeenCalledTimes(1);
+        expect(ctx.service.getState().status).toBe('downloaded'); // 재시도 가능 상태로 복귀
+
+        // 백스톱 타이머가 뒤늦게 발화해 거짓 실패를 덧씌우지 않는다.
+        const before = ctx.broadcasts.length;
+        vi.advanceTimersByTime(INSTALL_QUIT_GRACE_MS + 1);
+        expect(onInstallAborted).toHaveBeenCalledTimes(1);
+        expect(ctx.broadcasts.length).toBe(before);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // QA23(B-LOW): 타이머가 어디서도 clear 되지 않아, 정상 설치라도 종료가 15초를 넘기면
+    // (ollama taskkill 체인 최악값이 그에 육박) 거짓 실패 브로드캐스트 + **잠금 해제**가 일어났다.
+    // electron-updater 는 실패 시 quitAndInstallCalled 를 되돌리므로 연타 시 인스톨러 이중 spawn 위험.
+    it('설치가 error 로 정리된 뒤에는 잠금이 풀려 재시도할 수 있다', async () => {
+      vi.useFakeTimers();
+      try {
+        const ctx = setup();
+        await toDownloaded(ctx);
+        await ctx.service.install();
+        ctx.emit('error', new Error('No update filepath provided'));
+        await ctx.service.install();
+        expect(ctx.au.quitAndInstall, '정리 후에는 재시도가 가능해야 한다').toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('설치 요청 즉시 installing 상태가 되어 재클릭이 조용히 폐기되지 않는다', async () => {
+      const ctx = setup();
+      await toDownloaded(ctx);
+      await ctx.service.install();
+      expect(ctx.service.getState().status).toBe('installing');
+      // 이 상태는 브로드캐스트돼 UI 가 "설치 중"을 표시할 수 있어야 한다.
+      expect(ctx.broadcasts.some((s) => s.status === 'installing')).toBe(true);
+    });
+
     it('flush 표식 롤백 콜백을 호출한다 (창닫기 flush 우회 방지)', async () => {
       vi.useFakeTimers();
       try {

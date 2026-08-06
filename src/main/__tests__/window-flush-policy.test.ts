@@ -34,6 +34,25 @@ describe('decideCloseAction — win.on(close) 결정', () => {
     expect(decideCloseAction({ ...base, isQuitting: true })).toBe('allow');
     expect(decideCloseAction({ ...base, hasFlushed: true })).toBe('allow');
   });
+
+  // QA23(B-MED, 실데이터 손실): `hasFlushed → allow` 의 전제는 "종료 시퀀스가 곧 이 창을
+  // 끝낸다" 인데, **설치가 무산되면 그 전제가 깨진 채 표식만 남는다**. 설치 직전 flush 가 창을
+  // flushed 로 표시하고 quitAndInstall 이 조용히 실패하면(인스톨러 유실/차단) 앱은 살아 있는데
+  // 표식은 그대로다. 아무 반응이 없으니 사용자는 창 X 를 누르고(가장 개연성 높은 반응),
+  // 그 close 가 'allow' 로 빠져 **종료 flush 를 통째로 우회**한다 — flush 이후의 요약·Q&A·
+  // 인덱스 델타가 소실된다. 설치가 대기 중인 동안에는 표식을 신뢰하지 않는다.
+  it('설치 대기 중(무산 가능)에는 hasFlushed 표식을 신뢰하지 않고 다시 flush 한다', () => {
+    expect(decideCloseAction({ ...base, hasFlushed: true, isInstallPending: true })).toBe('intercept-flush');
+  });
+
+  it('설치가 실제 종료로 이어지면(isQuitting) 종전대로 닫히게 둔다', () => {
+    expect(decideCloseAction({ ...base, hasFlushed: true, isInstallPending: true, isQuitting: true })).toBe('allow');
+  });
+
+  it('설치 대기 중이어도 진행 중 flush 보호가 우선한다', () => {
+    expect(decideCloseAction({ ...base, isFlushing: true, hasFlushed: true, isInstallPending: true }))
+      .toBe('intercept-wait');
+  });
 });
 
 describe('selectFlushTargets — flushRenderersBeforeQuit 대상 선정', () => {

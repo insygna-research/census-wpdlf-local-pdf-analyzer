@@ -325,6 +325,9 @@ function createWindow(): BrowserWindow {
       isFlushing: flushingWindows.has(win),
       hasFlushed: flushedWindows.has(win),
       isQuitting,
+      // QA23(B-MED): 설치를 요청했는데 아직 종료되지 않은 구간에서는 flush 표식을 신뢰하지
+      // 않는다(설치가 무산되면 표식만 남아 이 close 가 종료 flush 를 통째로 우회했다).
+      isInstallPending: updaterService?.getState().status === 'installing',
     });
     if (action === 'intercept-wait') { e.preventDefault(); return; }
     if (action === 'allow') return;

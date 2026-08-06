@@ -19,8 +19,12 @@ export type UpdateBanner =
   | { kind: 'available'; version: string | null }
   /** 다운로드 진행 중 — 진행률만 알린다(조작 버튼 없음) */
   | { kind: 'downloading'; percent: number }
-  /** 다운로드 완료 — 재시작 설치 대기 */
-  | { kind: 'downloaded'; version: string | null };
+  /** 설치 요청 접수 ~ 종료 대기 — 조작 불가(QA23) */
+  | { kind: 'installing' }
+  /** 다운로드 완료 — 재시작 설치 대기. `errorKey` 가 있으면 직전 설치 시도가 실패한 것. */
+  | { kind: 'downloaded'; version: string | null; errorKey: string | null }
+  /** 실패 — 사유와 재시도 수단을 남긴다(QA23) */
+  | { kind: 'error'; errorKey: string | null; canRetryDownload: boolean };
 
 /**
  * 표시할 배너. 그 외 상태(unsupported/idle/checking/not-available/error)는 배너를 띄우지 않는다.
@@ -39,8 +43,23 @@ export function selectUpdateBanner(state: UpdateState | null | undefined): Updat
       return { kind: 'available', version: state.newVersion || null };
     case 'downloading':
       return { kind: 'downloading', percent: clampPercent(state.percent) };
+    case 'installing':
+      return { kind: 'installing' };
     case 'downloaded':
-      return { kind: 'downloaded', version: state.newVersion || null };
+      // errorKey 를 함께 싣는다 — 설치 시도가 실패해도 status 는 downloaded 로 유지되므로
+      // (인스톨러는 디스크에 남아 재시도가 가능하다) 이걸 표시하지 않으면 배너가 "설치
+      // 준비되었습니다" 만 반복해 **실패가 완전 무음**이 된다(QA23 B-MED).
+      return { kind: 'downloaded', version: state.newVersion || null, errorKey: state.errorKey || null };
+    case 'error':
+      // QA23(A-MED): 이전에는 여기서 null 을 반환해 **배너가 사유 없이 사라졌다**. 사용자는
+      // 다운로드가 끝난 것인지 실패한 것인지 알 수 없고, 재시도의 유일한 메인 화면 진입점까지
+      // 사라져 다시 설정을 열어야 했다 — 이 배너가 없애려던 바로 그 문제다.
+      return {
+        kind: 'error',
+        errorKey: state.errorKey || null,
+        // 확인된 버전이 남아 있으면 재확인 없이 다운로드를 다시 시도할 수 있다(canDownload 와 동일 규칙).
+        canRetryDownload: !!state.newVersion,
+      };
     default:
       return null;
   }
@@ -66,5 +85,11 @@ export function shouldResetDismiss(prev: UpdateBanner | null, next: UpdateBanner
   if (prev.kind !== next.kind) return true;
   const prevVersion = 'version' in prev ? prev.version : null;
   const nextVersion = 'version' in next ? next.version : null;
-  return prevVersion !== nextVersion;
+  if (prevVersion !== nextVersion) return true;
+  // QA23(B-MED): 설치 시도가 실패해도 status 는 downloaded 로 유지되므로 kind·version 이 그대로다.
+  // 그 상태에서 배너를 닫아둔 사용자는 **실패를 영영 볼 수 없다**(에러의 유일한 표시처가 설정
+  // 패널이라, 이 배너가 없애려던 "설정을 열어야만 안다" 로 되돌아간다). 새 실패 사유는 다시 띄운다.
+  const prevError = 'errorKey' in prev ? prev.errorKey : null;
+  const nextError = 'errorKey' in next ? next.errorKey : null;
+  return prevError !== nextError && nextError !== null;
 }

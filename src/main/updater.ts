@@ -150,6 +150,11 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
       apply({ type: 'downloaded', version: String(info?.version ?? state.newVersion ?? '') });
     });
     deps.autoUpdater.on('error', (err) => {
+      // QA23(B-MED/B-MED): 설치 시도 중 도착한 error 는 **설치 무산의 즉시 신호**다.
+      // electron-updater 는 인스톨러 경로 부재 등에서 dispatchError 를 t≈0 에 발화하는데,
+      // 이전에는 15초 백스톱 타이머만 롤백을 수행해 그 사이 창 X 닫기가 flush 표식을 타고
+      // 종료 flush 를 우회했다(실데이터 손실). 신호가 오면 기다리지 않는다.
+      if (installing) finishAbortedInstall();
       apply({ type: 'error', errorKey: classifyUpdateError(err) });
     });
   }
@@ -208,9 +213,32 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
     return state;
   }
 
+  /**
+   * 설치가 무산됐을 때의 공통 정리(QA23) — 잠금 해제 + 백스톱 타이머 취소 + flush 표식 롤백.
+   *
+   * 이전에는 이 처리가 15초 타이머 콜백 안에만 있었다. 그래서 ①실패 신호(error 이벤트)가 즉시
+   * 와도 15초를 기다렸고 ②정상 설치가 15초를 넘겨 종료되면 타이머가 그대로 발화해 거짓 실패를
+   * 브로드캐스트하고 **잠금까지 풀어** 연타 시 인스톨러가 두 번 spawn 될 수 있었다.
+   */
+  function finishAbortedInstall(): void {
+    if (installAbortTimer) {
+      clearTimeout(installAbortTimer);
+      installAbortTimer = null;
+    }
+    if (!installing) return;
+    installing = false;
+    try {
+      deps.onInstallAborted?.();
+    } catch (err) {
+      console.error('[update] onInstallAborted failed:', err);
+    }
+  }
+
   async function install(): Promise<UpdateState> {
     if (!supported || !canInstall(state.status) || installing) return state;
     installing = true;
+    // 설치 구간을 상태로 드러낸다 — 버튼이 "설치 중"으로 바뀌어 재클릭이 조용히 폐기되지 않는다.
+    apply({ type: 'install-started' });
     try {
       // 종료 flush 를 먼저 완주시킨다. quitAndInstall 이 유발하는 app.quit() 은 before-quit
       // 핸들러를 거치지만, 그쪽에 의존하면 인스톨러 spawn 과 flush 가 경쟁한다 — 여기서
@@ -229,24 +257,15 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
       // 재시도를 허용하고, flush 표식을 되돌리고, 사용자에게 실패를 표면화한다.
       installAbortTimer = setTimeout(() => {
         installAbortTimer = null;
-        installing = false;
-        try {
-          deps.onInstallAborted?.();
-        } catch (err) {
-          console.error('[update] onInstallAborted failed:', err);
-        }
+        if (!installing) return; // 이미 error 신호로 정리됨(QA23) — 거짓 실패를 덧씌우지 않는다.
+        finishAbortedInstall();
         apply({ type: 'error', errorKey: 'updateInstallFailed' });
       }, INSTALL_QUIT_GRACE_MS);
       // 종료를 막지 않도록 unref (Electron 종료 시퀀스가 타이머를 기다리지 않게).
       installAbortTimer.unref?.();
     } catch (err) {
       // 방어적 — 현행 electron-updater 는 여기로 오지 않지만 구현이 바뀔 수 있다.
-      installing = false;
-      try {
-        deps.onInstallAborted?.();
-      } catch (cbErr) {
-        console.error('[update] onInstallAborted failed:', cbErr);
-      }
+      finishAbortedInstall();
       apply({ type: 'error', errorKey: classifyUpdateError(err) });
     }
     return state;

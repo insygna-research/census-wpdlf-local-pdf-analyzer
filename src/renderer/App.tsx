@@ -541,11 +541,21 @@ export default function App() {
               ? tr('update.available', { version: updateBanner.version })
               : tr('update.availableNoVersion'))}
             {updateBanner.kind === 'downloading' && tr('update.downloading', { percent: updateBanner.percent })}
-            {updateBanner.kind === 'downloaded' && (updateBanner.version
-              ? tr('update.bannerReady', { version: updateBanner.version })
-              : tr('update.bannerReadyNoVersion'))}
+            {updateBanner.kind === 'installing' && tr('update.installing')}
+            {/* QA23: 설치 시도가 실패해도 status 는 downloaded 라 배너 문구가 그대로였다 —
+                실패가 완전 무음이 되지 않도록 사유를 앞에 붙인다. */}
+            {updateBanner.kind === 'downloaded' && (updateBanner.errorKey
+              ? translateMainError({ errorKey: updateBanner.errorKey }, tr('update.errorGeneric'))
+              : (updateBanner.version
+                ? tr('update.bannerReady', { version: updateBanner.version })
+                : tr('update.bannerReadyNoVersion')))}
+            {updateBanner.kind === 'error'
+              && translateMainError({ errorKey: updateBanner.errorKey ?? undefined }, tr('update.errorGeneric'))}
           </span>
-          {updateBanner.kind === 'available' && (
+          {(updateBanner.kind === 'available'
+            // QA23(A-MED): 실패 상태에서도 재시도 버튼을 남긴다 — canDownload 가 일부러 열어둔
+            // 재시도 경로의 유일한 메인 화면 진입점이 사라지면 다시 설정을 열어야 한다.
+            || (updateBanner.kind === 'error' && updateBanner.canRetryDownload)) && (
             <button
               type="button"
               // 다운로드는 앱을 종료시키지 않고 백그라운드로 받기만 하므로 작업 중에도 허용한다
@@ -553,7 +563,7 @@ export default function App() {
               onClick={() => { void window.electronAPI.update.download(); }}
               className="shrink-0 px-3 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors"
             >
-              {tr('update.downloadBtn')}
+              {updateBanner.kind === 'error' ? tr('update.retryBtn') : tr('update.downloadBtn')}
             </button>
           )}
           {updateBanner.kind === 'downloaded' && (

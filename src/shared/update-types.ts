@@ -19,6 +19,13 @@ export type UpdateStatus =
   | 'downloading'
   /** 다운로드 완료 — 재시작 시 설치 */
   | 'downloaded'
+  /**
+   * 설치를 요청해 flush·인스톨러 기동이 진행 중 — 아직 앱이 종료되지 않은 구간(QA23).
+   *
+   * 이전에는 이 구간이 상태로 표현되지 않아, `install()` 이 ms 안에 반환하는 동안 버튼이 다시
+   * 활성화되고 내부 잠금(installing)만 15초간 재클릭을 **조용히 폐기**했다(피드백 0).
+   */
+  | 'installing'
   | 'error';
 
 export interface UpdateState {

@@ -35,6 +35,15 @@ export interface CloseState {
   hasFlushed: boolean;
   /** before-quit 이 종료 시퀀스를 시작했는가. */
   isQuitting: boolean;
+  /**
+   * 업데이트 설치를 요청했으나 **아직 종료로 이어지지 않은** 상태인가(QA23 B-MED).
+   *
+   * 설치 직전 flush 는 창을 `hasFlushed` 로 표시하는데, 그 표식의 전제는 "곧 종료된다" 이다.
+   * quitAndInstall 이 조용히 실패하면 앱은 살아 있고 표식만 남아, 이후 창 X 닫기가 아래
+   * `hasFlushed → allow` 로 빠져 종료 flush 를 통째로 우회한다. 설치가 확정(=isQuitting)되기
+   * 전까지는 표식을 신뢰하지 않는다.
+   */
+  isInstallPending?: boolean;
 }
 
 export function decideCloseAction(s: CloseState): CloseAction {
@@ -42,7 +51,10 @@ export function decideCloseAction(s: CloseState): CloseAction {
   // 불변식 1 — isQuitting 여부와 무관하게 진행 중인 flush 를 보호한다. 종료 경로가 이
   // flush 를 await 하므로(selectFlushTargets) 종료가 영구 취소되지 않는다.
   if (s.isFlushing) return 'intercept-wait';
-  if (s.isQuitting || s.hasFlushed) return 'allow';
+  if (s.isQuitting) return 'allow';
+  // 불변식 4(QA23): 설치 대기 중에는 hasFlushed 를 무시하고 다시 flush 한다 — 표식 이후에
+  // 사용자가 만든 델타가 소실되지 않도록. 설치가 실제 종료로 이어지면 위 isQuitting 이 받는다.
+  if (s.hasFlushed && !s.isInstallPending) return 'allow';
   return 'intercept-flush';
 }
 
