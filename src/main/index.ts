@@ -141,7 +141,14 @@ async function saveSettings(settings: Record<string, unknown>): Promise<void> {
   return _saveSettings(settingsPath, settings);
 }
 
-function createWindow(): BrowserWindow {
+/**
+ * 메인 창 생성 + 수명주기 배선(close 인터셉트·권한·네비게이션 가드·드롭 처리).
+ *
+ * QA23: `export` 는 **테스트를 위해서다**. QA16→17→18 세 사이클 연속으로 데이터 손실이 난 곳이
+ * 바로 이 합성 층(순수 판정 → 부작용 매핑)인데, 순수 모듈(window-flush-policy)은 100% 커버돼도
+ * "그 판정을 preventDefault/destroy/표식에 올바르게 연결했는가" 는 어떤 테스트도 보지 않았다.
+ */
+export function createWindow(): BrowserWindow {
   // 기본 크기는 화면 작업영역에서 산출한다(window-size.ts). 고정 1000×1200 은 큰 모니터에서
   // 지나치게 좁고, 노트북(작업영역 높이 816 등)에서는 화면 밖으로 나가 아래쪽이 잘렸다.
   const { width, height } = computeDefaultWindowSize(screen.getPrimaryDisplay().workAreaSize);
@@ -445,7 +452,21 @@ function flushOneWindow(win: BrowserWindow): Promise<void> {
   return p;
 }
 
-function flushRenderersBeforeQuit(): Promise<void> {
+/**
+ * 설치 무산 시 "flush 완료" 표식을 되돌린다(QA19 A-MED, 실데이터 손실).
+ *
+ * 표식이 남으면 decideCloseAction 이 창 X 닫기를 'allow' 로 판정해 종료 flush 인터셉트를
+ * 건너뛰고 마지막 델타가 소실된다. 앱은 계속 살아있으므로 다음 종료를 위해 창들을 "아직 flush
+ * 안 됨" 상태로 되돌려야 한다.
+ *
+ * QA23: 인라인 클로저였던 것을 이름 있는 함수로 분리 — updater.test 는 콜백이 **호출되는지**만
+ * 검증할 수 있었고 이 본문(실제로 표식을 지우는가)은 어떤 테스트도 보지 않았다.
+ */
+export function revertFlushMarks(): void {
+  for (const win of BrowserWindow.getAllWindows()) flushedWindows.delete(win);
+}
+
+export function flushRenderersBeforeQuit(): Promise<void> {
   // QA18(B-MED, 데이터손실 회귀): 창 X 인터셉트로 이미 flush 중인 창을 여기서 필터링해 버리면
   // (v0.31.28) 종료 경로가 즉시 resolve → app.quit() → 그 창의 close 가 다시 발화 → 'flush
   // 진행 중' 가드의 preventDefault 가 **종료 자체를 취소**한다. darwin 은 window-all-closed 가
@@ -521,9 +542,7 @@ function getUpdaterService(): UpdaterService {
       // 종료 flush 인터셉트를 건너뛰고 마지막 델타(요약·Q&A·인덱스)가 소실된다 —
       // QA16 이 고친 바로 그 경로가 부활한다. 앱은 계속 살아있으므로 다음 종료를 위해
       // 창들을 "아직 flush 안 됨" 상태로 되돌려야 한다.
-      onInstallAborted: () => {
-        for (const win of BrowserWindow.getAllWindows()) flushedWindows.delete(win);
-      },
+      onInstallAborted: revertFlushMarks,
     });
     updaterService.wire();
   }
