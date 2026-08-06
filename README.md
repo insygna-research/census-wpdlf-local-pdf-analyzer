@@ -47,10 +47,11 @@ This document has two parts — **[User Guide](#user-guide)** (install · usage 
 
 ### Automatic updates
 
-Once installed, the app checks GitHub Releases for a new version on startup and shows a notice when one is ready — no need to revisit this page for every release.
+Once installed, the app checks GitHub Releases for a new version on startup and tells you on the main screen — no need to revisit this page for every release, and no need to go looking in Settings.
 
-- **Check is automatic, download is not** — you are told a new version exists; the download (~100MB) starts only after you press **Download**, so metered or tethered connections are never used without consent
-- **Install on your terms** — when the download finishes, a banner offers **Restart and install**. Summaries, Q&A, and search indexes in progress are flushed to disk before the app closes
+- **Check is automatic, download is not** — a notice says a new version exists and offers **Download**; the transfer (~100MB) starts only after you press it, so metered or tethered connections are never used without consent
+- **You can follow the whole thing from the main screen** — the notice shows *available* → *downloading %* → *ready to install*, and if something fails it says so with a **Retry** button rather than disappearing. Dismissing a notice keeps it quiet, but you are still told once the update is downloaded and ready
+- **Install on your terms** — when the download finishes, the notice offers **Restart and install**. Summaries, Q&A, and search indexes in progress are flushed to disk before the app closes; installing is blocked while a summary or indexing is running (downloading is not, since it happens in the background)
 - Turn the startup check off under **Settings → App Updates**; the **Check now** button there always works regardless
 - Only the installed Windows app self-updates — running from source (`npm run dev`) shows the section as unavailable
 
@@ -196,7 +197,7 @@ For image-based/scanned PDFs where text extraction fails, Vision AI recognizes t
 - Self-updating — new versions are detected on startup and installed with one click; downloads never start without consent, and in-progress work is saved before the app restarts
 
 **Quality assurance**
-- 1658 unit tests + Playwright E2E + CI quality gates, plus a 4-agent parallel QA round on every release
+- 1765 unit tests + Playwright E2E + CI quality gates, plus a 4-agent parallel QA round on every release
 - Build integrity — installer SHA-256 hashes + Sigstore attestation published automatically
 - Detailed improvement/fix history: [docs/HISTORY.md](docs/HISTORY.md) (Korean)
 
@@ -256,7 +257,7 @@ For image-based/scanned PDFs where text extraction fails, Vision AI recognizes t
 | Styling | Tailwind CSS v4 + @tailwindcss/typography |
 | Build | electron-vite + electron-builder (Windows NSIS — macOS DMG paused until notarization credentials are in place) |
 | Auto-update | electron-updater (GitHub Releases feed) — check on startup, download and install only on user consent, renderer flush before install |
-| Testing | Vitest, 1658 unit tests / 92 files (renderer·shared 1073 + main 585) + Playwright E2E (9 CI-deterministic tests) + `tsc --noEmit` type check + CI coverage gates (81/73/81/84) |
+| Testing | Vitest, 1765 unit tests / 95 files (renderer·shared 1155 + main 610) + Playwright E2E (9 CI-deterministic tests) + `tsc --noEmit` type check + CI coverage gates (81/74/81/84) |
 | i18n | In-house (i18n.ts) — 400+ keys, useT() hook, template substitution |
 | API key security | Electron safeStorage (OS keychain encryption), decrypted only in the Main process |
 | Shared constants | `src/shared/constants.ts` — shared between Main/Renderer (prevents drift of MAX_PDF_SIZE etc.) |
@@ -309,7 +310,7 @@ src/
     │   ├── use-qa.ts          # Q&A chat hook (RAG semantic search + keyword fallback, history)
     │   ├── vector-store.ts    # In-memory vector store (cosine similarity, dimension checks)
     │   ├── store.ts           # Zustand state (summary + Q&A + RAG index)
-    │   └── __tests__/         # Unit tests (1658, 92 files)
+    │   └── __tests__/         # Unit tests (1765, 95 files)
     └── types/
         └── index.ts       # Type definitions + provider model constants
 ```
@@ -504,11 +505,11 @@ The threat model and mitigations currently in place. For the detailed per-versio
 
 ## Quality Assurance
 
-- **1658 unit tests / 92 files** — renderer·shared 1073 + main 585. The main process is behavior-tested through an electron mocking harness covering IPC handlers, OllamaManager, the API key store, ai-service, and cross-session search; the renderer/preload layer (all 17 components + core libraries such as use-summarize/use-session/pdf-parser/safe-markdown and the preload bridge) is behavior-tested via happy-dom
+- **1765 unit tests / 95 files** — renderer·shared 1155 + main 610. The main process is behavior-tested through an electron mocking harness covering IPC handlers, OllamaManager, the API key store, ai-service, and cross-session search; the renderer/preload layer (all 17 components + core libraries such as use-summarize/use-session/pdf-parser/safe-markdown and the preload bridge) is behavior-tested via happy-dom
 - **Playwright E2E** — 9 CI-deterministic tests driving the real Electron build (cold-start wizard, PDF parse, session/settings persistence across restart, upload-error paths), all AI-independent; multi-tab restore and summarize/Q&A/collection flows are covered by local-only Ollama specs
-- **CI gates** — `tsc --noEmit` (strict, incl. a separate e2e type-check project), enforced coverage thresholds (81/73/81/84), lockfile version sync check, tag ↔ `package.json` version match, `npm audit` advisory, Node 22/24 matrix plus a Windows unit-test leg
+- **CI gates** — `tsc --noEmit` (strict, incl. a separate e2e type-check project), enforced coverage thresholds (81/74/81/84), lockfile version sync check, tag ↔ `package.json` version match, `npm audit` advisory, Node 22/24 matrix plus a Windows unit-test leg
 - **Packaged-app gate (release only)** — the release workflow launches the actual packaged binary before uploading any asset, and verifies that the renderer boots and parses a real PDF **from inside the asar alone**, plus an asar size ceiling. Every other E2E spec runs the source tree's `out/`, where the repo's `node_modules` is still visible — so none of them can catch a packaging regression
-- **4-agent parallel QA** — a full-codebase QA round on every release, each agent taking a different axis (recent code, concurrency, persistence, packaging/CI, …). Zero blocking findings for 50+ consecutive rounds; what the rounds actually surface now is the expensive-but-quiet class — data that disappears without an error, and answers that look correct but aren't. Two examples fixed in v0.31.38: a question asked in the moment before a document's saved session finished loading left the stored conversation unloaded, after which autosave replaced it with just that one exchange, and a document printing "Chapter 3 …" as a running header was split into one chapter per page — 300 summarization calls for a 300-page file instead of about 30. The rounds also catch regressions introduced by earlier fixes — the v0.31.35 hotfix repaired two shipped in v0.31.34
+- **4-agent parallel QA** — a full-codebase QA round on every release, each agent taking a different axis (recent code, concurrency, persistence, packaging/CI, …). Zero blocking findings for 50+ consecutive rounds; what the rounds actually surface now is the expensive-but-quiet class — data that disappears without an error, and answers that look correct but aren't. Two examples fixed in v0.31.42: on documents whose first pages are a table of contents, those contents lines consumed the chapter numbers and every real chapter after them was suppressed — chapter summaries lost all but one; and opening a document while Ollama was not running deleted its stored search index, so reopening meant re-embedding the whole file. The rounds are also, by design, where regressions introduced by earlier fixes surface: of the findings in that round, five traced back to fixes shipped in the two rounds before it — which is why each fix now lands with a test that reproduces the defect first
 - Detailed improvement/fix history: [docs/HISTORY.md](docs/HISTORY.md) (Korean)
 
 ## License
