@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog, safeStorage, shell, screen } from 'electron';
 // 자동 업데이트: electron-updater 는 main 전용(production dependency 로 asar 에 동봉된다 —
 // electron-builder 는 files 패턴과 무관하게 production 의존성을 수집한다).
 import { autoUpdater } from 'electron-updater';
@@ -9,6 +9,7 @@ import fsp from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { OllamaManager } from './ollama-manager';
 import { decideCloseAction, selectFlushTargets } from './window-flush-policy';
+import { computeDefaultWindowSize, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT } from './window-size';
 import { createUpdaterService, type UpdaterService } from './updater';
 import { AUTO_CHECK_STARTUP_DELAY_MS } from './update-policy';
 import type { UpdateState } from '../shared/update-types';
@@ -141,11 +142,15 @@ async function saveSettings(settings: Record<string, unknown>): Promise<void> {
 }
 
 function createWindow(): BrowserWindow {
+  // 기본 크기는 화면 작업영역에서 산출한다(window-size.ts). 고정 1000×1200 은 큰 모니터에서
+  // 지나치게 좁고, 노트북(작업영역 높이 816 등)에서는 화면 밖으로 나가 아래쪽이 잘렸다.
+  const { width, height } = computeDefaultWindowSize(screen.getPrimaryDisplay().workAreaSize);
   const win = new BrowserWindow({
-    width: 1000,
-    height: 1200,
-    minWidth: 700,
-    minHeight: 600,
+    width,
+    height,
+    center: true,
+    minWidth: MIN_WINDOW_WIDTH,
+    minHeight: MIN_WINDOW_HEIGHT,
     icon: app.isPackaged
       ? path.join(process.resourcesPath, 'icon.png')
       : path.join(__dirname, '../../resources/icon.png'),
