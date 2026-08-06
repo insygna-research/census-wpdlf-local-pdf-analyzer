@@ -22,11 +22,16 @@ export const MIN_WINDOW_HEIGHT = 600;
  * 지나치게 길어진다) 다른 창과 병행 작업이 어렵다. 최대화는 사용자가 직접 하면 된다.
  */
 export const MAX_DEFAULT_WIDTH = 1600;
-export const MAX_DEFAULT_HEIGHT = 1200;
+export const MAX_DEFAULT_HEIGHT = 1400;
 
-/** 작업영역 대비 비율. 세로를 더 크게 두는 이유: 문서 뷰어라 세로 공간이 곧 읽는 양이다. */
+/**
+ * 작업영역 대비 비율. 세로를 크게 두는 이유: 문서 뷰어라 **세로 공간이 곧 한 번에 읽는 양**이다
+ * (요약 본문·PDF 페이지·Q&A 스레드가 전부 세로로 흐른다). 폭은 텍스트 행 길이와 병행 작업 때문에
+ * 오히려 제한하는 편이 낫지만, 높이는 화면이 허용하는 만큼 쓰는 게 이득이라 비율·상한을 함께 올렸다.
+ * 상단 여백(0.92)은 창을 옮기거나 작업표시줄이 자동 숨김 해제될 때의 여유다.
+ */
 export const WIDTH_RATIO = 0.7;
-export const HEIGHT_RATIO = 0.85;
+export const HEIGHT_RATIO = 0.92;
 
 export interface WindowSize {
   width: number;

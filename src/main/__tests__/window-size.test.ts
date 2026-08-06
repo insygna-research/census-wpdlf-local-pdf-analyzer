@@ -21,22 +21,23 @@ describe('computeDefaultWindowSize', () => {
   it('큰 모니터(2560×1392 작업영역): 상한까지 키우되 넘지 않는다', () => {
     const s = computeDefaultWindowSize({ width: 2560, height: 1392 });
     expect(s.width).toBe(MAX_DEFAULT_WIDTH);          // 2560×0.7=1792 → 상한 1600
-    expect(s.height).toBe(Math.round(1392 * 0.85));   // 1183 (상한 1200 미만)
+    expect(s.height).toBe(1281);                      // 1392×0.92 (상한 1400 미만)
     expect(s.width).toBeGreaterThan(1000);            // 종전 고정폭보다 넓어야 한다(요구사항)
+    expect(s.height).toBeGreaterThan(1200);           // 종전 고정높이보다 커야 한다(요구사항)
   });
 
   it('1080p(1920×1040 작업영역): 화면 안에 들어온다', () => {
     const s = computeDefaultWindowSize({ width: 1920, height: 1040 });
     expect(s.width).toBeLessThanOrEqual(1920);
     expect(s.height).toBeLessThanOrEqual(1040);
-    expect(s.height).toBe(884);
+    expect(s.height).toBe(957);
   });
 
   it('노트북(1536×816 작업영역): 종전 고정 높이 1200 이 잘리던 케이스가 화면 안에 들어온다', () => {
     const s = computeDefaultWindowSize({ width: 1536, height: 816 });
     expect(s.height).toBeLessThanOrEqual(816);
     expect(s.width).toBeLessThanOrEqual(1536);
-    expect(s.height).toBe(694);
+    expect(s.height).toBe(751);
   });
 
   it('세로 모니터(1080×1872): 높이는 상한에서 멈추고 폭은 하한 위로 유지된다', () => {
