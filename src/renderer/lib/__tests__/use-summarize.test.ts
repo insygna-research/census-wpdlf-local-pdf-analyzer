@@ -44,6 +44,42 @@ describe('labelParagraphsWithPages — 요약 경로 페이지 라벨링', () =>
     expect(labelParagraphsWithPages(['', '  ', '\n\n'])).toBe('');
   });
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // QA23(C-MED): OCR 상한을 4000→12000 으로 올리면서 생긴 경로. 마크다운 표 위주의 OCR
+  // 페이지는 빈 줄이 없어 **한 페이지 = 한 단락**이 되는데, 그러면 라벨이 페이지 앞에 하나만
+  // 붙는다. 그 단락이 청킹 예산(한글 기준 ~6000자)을 넘으면 두 번째 조각부터는 **라벨이 없어**
+  // 그 조각에서 생성된 요약 문장이 인용을 달 수 없거나 다른 페이지 라벨을 잘못 가져간다.
+  // 상한이 4000 이던 시절엔 한 페이지가 6000자를 넘을 수 없어 구조적으로 불가능했다.
+  // ─────────────────────────────────────────────────────────────────────────
+  it('아주 긴 단일 단락 페이지도 조각마다 라벨을 유지한다', () => {
+    const huge = '가'.repeat(12000); // 표 위주 OCR 페이지(빈 줄 없음)
+    const out = labelParagraphsWithPages([huge]);
+    const segments = out.split('\n\n');
+    expect(segments.length, '한 덩어리로 남으면 청킹 후 라벨 없는 조각이 생긴다').toBeGreaterThan(1);
+    expect(segments.every((s) => s.startsWith('[p.1] ')), '모든 조각이 라벨을 가져야 한다').toBe(true);
+    // 본문은 한 글자도 잃지 않는다.
+    expect(out.replace(/\[p\.1\] /g, '').replace(/\n\n/g, '')).toBe(huge);
+  });
+
+  it('긴 단락을 쪼갤 때 줄 경계를 우선 사용한다 (표 행이 중간에 잘리지 않게)', () => {
+    const row = '| 항목 | 값 |';
+    const page = Array.from({ length: 400 }, () => row).join('\n'); // 6400자 표
+    const out = labelParagraphsWithPages([page]);
+    for (const seg of out.split('\n\n')) {
+      const body = seg.replace('[p.1] ', '');
+      expect(body.startsWith('|'), '조각이 행 중간에서 시작하면 안 된다').toBe(true);
+      expect(body.endsWith('|'), '조각이 행 중간에서 끝나면 안 된다').toBe(true);
+    }
+  });
+
+  it('페이지 번호는 조각 전체에서 정확히 유지된다', () => {
+    const out = labelParagraphsWithPages(['짧은 1쪽', '나'.repeat(9000)]);
+    expect(out).toContain('[p.1] 짧은 1쪽');
+    expect(out).not.toMatch(/\[p\.(?!1\]|2\])\d+\]/); // 1·2 외의 라벨이 생기지 않는다
+    const segs = out.split('\n\n').slice(1);
+    expect(segs.every((s) => s.startsWith('[p.2] '))).toBe(true);
+  });
+
   // ─── R35 불변식 가드 ───
 
   it('R35: 멀티페이지 입력에도 범위 라벨 [p.N-M] 을 절대 방출하지 않는다', () => {

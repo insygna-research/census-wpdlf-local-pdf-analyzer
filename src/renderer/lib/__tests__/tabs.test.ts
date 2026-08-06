@@ -13,9 +13,11 @@ const M = vi.hoisted(() => ({
   restoreSessionForDocument: vi.fn(() => Promise.resolve()),
   openPath: vi.fn(),
   sessionLoad: vi.fn(),
+  notifyEmptyPages: vi.fn(),
 }));
 
-vi.mock('../pdf-parser', () => ({ handlePdfData: M.handlePdfData }));
+// QA23: 세션 복원도 "빈 페이지 다수" 를 다시 통지한다(1회성 파싱 통지가 세션에 안 남던 결함).
+vi.mock('../pdf-parser', () => ({ handlePdfData: M.handlePdfData, notifyEmptyPages: M.notifyEmptyPages }));
 vi.mock('../use-session', () => ({
   persistCurrentSession: M.persistCurrentSession,
   restoreSessionForDocument: M.restoreSessionForDocument,
@@ -172,6 +174,34 @@ describe('switchToTab', () => {
     expect(st.pdfBytes).toBeNull(); // 비상주 — 인용 클릭 시 lazy 로드
     expect(st.error).toBeNull();
     expect(M.restoreSessionForDocument).toHaveBeenCalledTimes(1);
+  });
+
+  // QA23(C-MED): 파싱 시점의 "N페이지가 비어 있음" 통지는 1회성이라 세션에 남지 않는다.
+  // 그래서 200쪽 중 150쪽이 OCR 실패로 빈 채 저장된 문서를 재오픈하면 **완전한 문서처럼** 보이고
+  // 그 위에서 요약·RAG·Q&A 가 계속 돌았다(QA22 가 닫으려던 무음 손실이 두 번째 세션부터 부활).
+  it('세션 복원 시 빈 페이지가 많으면 다시 통지한다', async () => {
+    seedTabs(['/docs/a.pdf'], '/docs/a.pdf');
+    useAppStore.setState((s) => ({
+      openTabs: [...s.openTabs, { filePath: '/docs/scan.pdf', fileName: 'scan.pdf', pageCount: 10, docHash: 'e'.repeat(64) }],
+    }));
+    M.sessionLoad.mockResolvedValue({
+      session: {
+        schemaVersion: 1, docHash: 'e'.repeat(64), fileName: 'scan.pdf', filePath: '/docs/scan.pdf',
+        pageCount: 10, extractedText: '표지 본문',
+        // 10쪽 중 8쪽이 빈 채 저장된 문서(OCR 부분 실패)
+        pageTexts: ['표지 본문', '', '', '', '', '', '', '', '', '마지막'],
+        isOcr: true,
+        chapters: [], summaries: {}, qaMessages: [], embedModel: null, embedDim: null, chunkMeta: [],
+      },
+      blob: null,
+    });
+
+    await switchToTab('/docs/scan.pdf');
+
+    expect(M.notifyEmptyPages).toHaveBeenCalledTimes(1);
+    const [pageTexts, key] = M.notifyEmptyPages.mock.calls[0]!;
+    expect((pageTexts as string[]).length).toBe(10);
+    expect(key, 'OCR 문서면 OCR 부분 실패 문구여야 한다').toBe('pdf.ocrPartialFailNotice');
   });
 
   it('생성 중 전환 차단', async () => {

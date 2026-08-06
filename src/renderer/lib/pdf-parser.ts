@@ -106,6 +106,11 @@ export interface TextItemLike {
   str?: string;
   transform?: number[] | null;
   width?: number;
+  /**
+   * pdfjs 가 계산해 주는 줄바꿈 표식(TextItem 계약). worker 가 **회전각을 역보정하고 textRise 를
+   * 보정한 뒤** 판정하므로, 좌표로 재추정하는 것보다 정확하다(QA23 C-MED).
+   */
+  hasEOL?: boolean;
 }
 
 /**
@@ -120,9 +125,17 @@ export interface TextItemLike {
  * 텍스트 행렬 tx = [a, b, c, d, e, f] — 글자 크기 s, 회전 θ 이면 [s·cosθ, s·sinθ, -s·sinθ, s·cosθ].
  */
 export function assemblePageText(items: readonly unknown[]): string {
-  let lastY: number | null = null;
-  let lastEndX = 0;
   const parts: string[] = [];
+  /** 직전 아이템의 기하 정보 — 다음 아이템과의 관계를 **그 줄의 좌표계**로 판정하기 위해 보관. */
+  let prev: {
+    x: number; y: number;
+    /** 문자 진행 방향 단위벡터(회전 반영). 회전 없으면 (1, 0). */
+    dirX: number; dirY: number;
+    /** 진행 방향으로의 전진량(= 이 아이템이 차지한 길이). */
+    advance: number;
+    fontSize: number;
+    hasEOL: boolean;
+  } | null = null;
 
   // pdfjs 의 items 는 TextItem | TextMarkedContent 혼합이라 str 유무로 걸러낸다(종전과 동일).
   for (const raw of items) {
@@ -133,47 +146,74 @@ export function assemblePageText(items: readonly unknown[]): string {
       // transform이 없으면 공백 연결 fallback
       if (parts.length > 0) parts.push(' ');
       parts.push(item.str);
+      prev = null;
       continue;
     }
     const x = tx[4] ?? 0;
     const y = tx[5] ?? 0;
+    const a = tx[0] ?? 0;
+    const b = tx[1] ?? 0;
     // QA22 백로그: 이전엔 `|a| || |d| || 12` 였다. 90°/270° 회전 텍스트는 a=d=0 이고 크기가
-    // b·c 에 들어가므로 **실제 크기와 무관하게 12 로 폴백**됐다 — 세로 축 라벨·측면 표·워터마크가
-    // 흔한 논문/도면 PDF 에서 임계(줄바꿈 0.5×, 공백 0.3×)가 실제 크기와 어긋나, 큰 글자는 줄바꿈이
-    // 과다 삽입되고 작은 글자는 줄이 통째로 붙어 나왔다. hypot(a,b) = 문자 진행 방향의 실제 배율이라
-    // 회전각과 무관하게 정확하고, 회전 없는 일반 경우([s,0,0,s])는 |a| 와 결과가 동일하다.
-    const fontSize = Math.hypot(tx[0] ?? 0, tx[1] ?? 0) || Math.hypot(tx[2] ?? 0, tx[3] ?? 0) || 12;
+    // b·c 에 들어가므로 **실제 크기와 무관하게 12 로 폴백**됐다. hypot(a,b) = 문자 진행 방향의
+    // 실제 배율이라 회전각과 무관하게 정확하고, 회전 없는 경우([s,0,0,s])는 |a| 와 동일하다.
+    const fontSize = Math.hypot(a, b) || Math.hypot(tx[2] ?? 0, tx[3] ?? 0) || 12;
+    // 진행 방향 단위벡터. 퇴화 행렬(크기 0)은 종전과 같이 가로쓰기로 본다.
+    const dirLen = Math.hypot(a, b);
+    const dirX = dirLen > 0 ? a / dirLen : 1;
+    const dirY = dirLen > 0 ? b / dirLen : 0;
+    const advance = item.width ?? item.str.length * fontSize * 0.5;
 
-    if (lastY !== null) {
-      const yDiff = Math.abs(y - lastY);
-      if (yDiff > fontSize * 0.5) {
-        // 줄이 바뀜
+    if (prev) {
+      const dx = x - prev.x;
+      const dy = y - prev.y;
+      // 직전 줄의 좌표계로 분해: along = 문자 진행 방향, perp = 그 수직(= 줄이 바뀌는 방향).
+      // QA23(C-MED): 이전에는 이 둘을 각각 x·y 로 **고정**해 놓아, 90° 회전 텍스트에서 글자
+      // 진행(= y 이동)이 전부 줄바꿈으로 판정됐다("정확도" → "정\n확\n도"). 그러면 그 라벨은
+      // 검색·인용·RAG 에서 사실상 존재하지 않는 것과 같아진다.
+      const along = dx * prev.dirX + dy * prev.dirY;
+      const perp = Math.abs(dx * -prev.dirY + dy * prev.dirX);
+      // QA23(C-MED): 임계 글꼴은 **두 아이템 중 큰 쪽**이다. 이전에는 현재 아이템 기준이라,
+      // 각주 번호·수식 첨자(6~7pt)가 나오면 임계가 3~3.5 로 좁아져 본문 베이스라인으로
+      // 돌아오는 4pt 이동이 **문장 한가운데서 줄바꿈**으로 오판됐다(국문 교재·논문에서 페이지마다
+      // 발생). 줄의 정체성은 본문 글꼴이 정한다.
+      const scale = Math.max(prev.fontSize, fontSize);
+      // pdfjs 가 준 hasEOL 이 1차 신호다 — worker 가 회전·textRise 를 보정한 뒤 판정한 값이라
+      // 좌표 재추정보다 정확하다. 기하 판정은 그 필드가 없는 입력(합성 픽스처·구버전)용 보강.
+      if (prev.hasEOL || perp > scale * 0.5) {
         parts.push('\n');
-      } else if (x > lastEndX + fontSize * 0.3) {
-        // 같은 줄에서 간격이 있으면 공백
+      } else if (along > prev.advance + scale * 0.3) {
+        // 같은 줄에서 간격이 있으면 공백 (한글 글자 단위 분할은 간격이 좁아 붙는다)
         parts.push(' ');
       }
-      // 한글 글자 단위 분할: 간격이 매우 좁으면 공백 없이 연결
     }
 
     parts.push(item.str);
-    lastY = y;
-    lastEndX = x + (item.width ?? item.str.length * fontSize * 0.5);
+    prev = { x, y, dirX, dirY, advance, fontSize, hasEOL: item.hasEOL === true };
   }
 
   return parts.join('');
 }
 
 /**
+ * 텍스트가 비어 있는 페이지 수 — 순수. 통지 여부 판정과 테스트가 공유한다.
+ * 10% 초과이면서 2장 이상일 때만 유의미로 본다(표지·간지 한두 장은 정상).
+ */
+export function countEmptyPages(pageTexts: readonly string[]): { empty: number; total: number; significant: boolean } {
+  const total = pageTexts.length;
+  const empty = pageTexts.filter((p) => !p || p.replace(/\s+/g, '').length === 0).length;
+  return { empty, total, significant: total > 0 && empty >= 2 && empty / total > 0.1 };
+}
+
+/**
  * 비어 있는(텍스트 미추출) 페이지가 유의미하게 많으면 1회 통지. 무음 손실을 표면화하는 용도라
  * 임계를 낮게 두되, 표지·간지 몇 장이 비어 있는 정상 문서에서 과알림이 되지 않도록 비율을 본다.
  */
-function notifyEmptyPages(pageTexts: string[], key: 'pdf.emptyPagesNotice' | 'pdf.ocrPartialFailNotice'): void {
-  const total = pageTexts.length;
-  if (total === 0) return;
-  const empty = pageTexts.filter((p) => !p || p.replace(/\s+/g, '').length === 0).length;
-  // 10% 초과이면서 2장 이상 — 한두 장의 표지/간지는 정상이므로 제외.
-  if (empty < 2 || empty / total <= 0.1) return;
+export function notifyEmptyPages(
+  pageTexts: readonly string[],
+  key: 'pdf.emptyPagesNotice' | 'pdf.ocrPartialFailNotice',
+): void {
+  const { empty, total, significant } = countEmptyPages(pageTexts);
+  if (!significant) return;
   try {
     useAppStore.getState().setNotice({
       message: t(key, { count: String(empty), total: String(total) }),
@@ -236,11 +276,12 @@ export async function parsePdf(
 
   // 배치 병렬 처리 (한 번에 10페이지씩)
   const BATCH_SIZE = 10;
-  const MAX_TOTAL_IMAGES = 50;
   const pages: string[] = new Array(pageCount).fill('');
   const allImages: PageImage[] = [];
   // QA22(B-MED): 이미 담은 이미지의 시그니처 — 문서 내 반복 이미지(로고·머리말 장식) 제외용.
   const seenImageSignatures = new Set<string>();
+  // 문서 전체에서 검사한 이미지 수(채택 여부 무관) — 위 shouldExtractMoreImages 의 두 번째 예산.
+  const imageStats = { examined: 0 };
 
   try {
     for (let batchStart = 0; batchStart < pageCount; batchStart += BATCH_SIZE) {
@@ -259,9 +300,12 @@ export async function parsePdf(
             const imagePromise = (async (): Promise<PageImage[]> => {
               // perf: 이미지 분석 OFF면 추출 자체를 건너뛴다(getOperatorList + 디코딩/base64 낭비 제거).
               if (!extractImages) return [];
-              if (allImages.length >= MAX_TOTAL_IMAGES) return [];
+              // QA23(C-MED): 채택 수뿐 아니라 **검사 수**도 예산이다. 채택되지 않는 이미지(고해상
+              // 스캔 거절·중복 로고)만 반복되면 채택 수가 영원히 차지 않아 500페이지 전부에
+              // getOperatorList + 전체 디코딩이 돌았다.
+              if (!shouldExtractMoreImages(allImages.length, imageStats.examined)) return [];
               try {
-                return await extractPageImages(page, i);
+                return await extractPageImages(page, i, imageStats);
               } catch {
                 return [];
               }
@@ -643,9 +687,34 @@ const MAX_IMAGE_EDGE = 1024;
 const MAX_IMAGE_PIXELS = 4_000_000; // 4M 픽셀 초과 시 스킵 (OOM 방지)
 const MAX_IMAGES_PER_PAGE = 10;
 
+/**
+ * **검사한** 이미지 수의 상한 — 채택된 수(MAX_TOTAL_IMAGES)와 별개다.
+ *
+ * QA23(C-MED): 추출 단락(short-circuit)이 `allImages.length >= MAX_TOTAL_IMAGES` 하나뿐이라
+ * **채택되지 않는 이미지는 아무리 처리해도 예산이 차지 않았다.** 두 경우가 흔하다:
+ *  - 300 DPI A4 스캔(2480×3508 = 8.7M 픽셀)은 MAX_IMAGE_PIXELS 로 전량 거절 → 계속 0
+ *  - QA22 가 넣은 중복 제거는 **디코딩·캔버스·base64 를 다 끝낸 뒤** 걸러내므로, 로고가 300장
+ *    반복되는 강의자료는 로고를 300번 인코딩하고 299번 버린다 → 역시 계속 0
+ * 그래서 500페이지 전부에 대해 `getOperatorList`(pdfjs 최고비용 호출, 페이지당 5s 타임아웃)와
+ * 전체 이미지 디코딩이 돌았다 — QA22 의 정합성 수정이 파싱 시간·피크 메모리 회귀를 동반한 것이다.
+ * 채택 여부와 무관하게 "본 것"을 세어 병리적 문서에서 작업량을 유한하게 만든다.
+ * (정상 문서는 이 값에 닿지 않는다 — 50장을 채우거나 문서가 먼저 끝난다.)
+ */
+export const MAX_EXAMINED_IMAGES = 400;
+
+/** Vision 분석에 넘길 이미지 수 상한(문서 전체). 이전에는 parsePdf 지역 상수였다. */
+export const MAX_TOTAL_IMAGES = 50;
+
+/** 이미지 추출 예산 판정 — 순수. 둘 중 하나라도 소진되면 더 이상 페이지를 열지 않는다. */
+export function shouldExtractMoreImages(acceptedCount: number, examinedCount: number): boolean {
+  return acceptedCount < MAX_TOTAL_IMAGES && examinedCount < MAX_EXAMINED_IMAGES;
+}
+
 async function extractPageImages(
   page: PDFPageProxy,
   pageIndex: number,
+  /** 문서 전체에서 **검사한** 이미지 수(채택 여부 무관) — 호출자가 공유해 예산으로 쓴다(QA23). */
+  stats?: { examined: number },
 ): Promise<PageImage[]> {
   const { OPS } = await loadPdfjs(); // 메모이즈됨 — parsePdf 가 이미 로드해 즉시 반환
   // getOperatorList 는 pdfjs 내부 content stream 파싱을 수행 — 손상된 PDF 에서 hang 가능.
@@ -687,6 +756,9 @@ async function extractPageImages(
     // 호출하지 않아 1s 타임아웃까지 낭비하는 dead path 가 되므로 사전 거절.
     if (!Array.isArray(args) || typeof args[0] !== 'string' || args[0].length === 0) continue;
     const imageName = args[0];
+    // 여기서부터가 비싼 구간(objs.get → 디코딩 → 캔버스 → base64). 채택되든 거절되든 "본 것"으로
+    // 센다 — 거절만 반복되는 문서(고해상 스캔·반복 로고)에서 작업량이 무한히 늘지 않도록.
+    if (stats) stats.examined++;
     let imgData: { width: number; height: number; data: Uint8ClampedArray; kind?: number } | null = null;
     try {
       imgData = await new Promise((resolve, reject) => {

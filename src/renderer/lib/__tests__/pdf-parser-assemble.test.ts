@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { assemblePageText, type TextItemLike } from '../pdf-parser';
+import { assemblePageText, shouldExtractMoreImages, MAX_EXAMINED_IMAGES, type TextItemLike } from '../pdf-parser';
 
 /**
  * 페이지 텍스트 조립기(assemblePageText) 회귀 넷.
@@ -70,6 +70,108 @@ describe('assemblePageText — 기존 동작 고정(회귀 넷)', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// QA23(C-MED ×3): 조립기가 pdfjs 가 이미 계산해 준 정보를 버리고 y 좌표로 재추정하던 문제.
+// pdfjs worker 는 **회전각을 역보정하고 textRise 를 보정한 뒤** 줄바꿈 여부를 `hasEOL` 로
+// 알려주는데(TextItem 계약), 이 앱은 그 필드를 전 소스에서 한 번도 읽지 않았다. 그 결과:
+//   - 각주 번호·수식 첨자가 문장 중간에 줄바꿈을 만든다(임계가 **작은 첨자 글꼴** 기준이라)
+//   - 90° 회전 텍스트는 글자 진행이 곧 y 이동이라 **글자마다 줄바꿈**된다
+// 두 증상의 근인이 같으므로 함께 닫는다.
+// ─────────────────────────────────────────────────────────────────────────────
+// QA23(C-MED): 이미지 추출 예산이 **채택 수**만 봐서, 채택되지 않는 이미지(고해상 스캔 거절·
+// 중복 로고)만 반복되는 문서에서는 예산이 영원히 차지 않아 500페이지 전부에 최고비용 호출이 돌았다.
+describe('shouldExtractMoreImages — 추출 예산 (QA23)', () => {
+  it('채택 수가 남아 있고 검사 수도 여유가 있으면 계속한다', () => {
+    expect(shouldExtractMoreImages(0, 0)).toBe(true);
+    expect(shouldExtractMoreImages(49, MAX_EXAMINED_IMAGES - 1)).toBe(true);
+  });
+
+  it('채택 수가 상한이면 멈춘다 (종전 동작)', () => {
+    expect(shouldExtractMoreImages(50, 0)).toBe(false);
+  });
+
+  it('채택이 0이어도 검사 수가 상한이면 멈춘다 — 이번 수정의 핵심', () => {
+    expect(shouldExtractMoreImages(0, MAX_EXAMINED_IMAGES)).toBe(false);
+  });
+});
+
+describe('assemblePageText — pdfjs hasEOL 채택 (QA23)', () => {
+  // 이 케이스가 hasEOL 채택의 존재 이유다. 첨자 오판을 막으려고 임계를 **두 아이템 중 큰 글꼴**
+  // 기준으로 올렸는데, 그러면 "12pt 본문 줄 다음에 7pt 주석 줄이 5pt 아래에서 시작" 같은 **진짜
+  // 줄바꿈**을 기하 판정이 놓친다(perp 5 < 0.5×12=6). pdfjs 가 이미 판정해 둔 값이 그걸 복구한다.
+  it('기하 판정이 놓치는 진짜 줄바꿈을 hasEOL 이 잡는다', () => {
+    const items: TextItemLike[] = [
+      { str: '본문 줄', transform: [12, 0, 0, 12, 0, 700], width: 60, hasEOL: true },
+      { str: '주석 줄', transform: [7, 0, 0, 7, 0, 695], width: 40 },
+    ];
+    expect(assemblePageText(items)).toBe('본문 줄\n주석 줄');
+  });
+
+  it('hasEOL 이 참이면 같은 위치여도 줄을 바꾼다 (좌표만으로는 알 수 없는 경우)', () => {
+    const items: TextItemLike[] = [
+      { str: 'A', transform: [10, 0, 0, 10, 0, 700], width: 10, hasEOL: true },
+      { str: 'B', transform: [10, 0, 0, 10, 10, 700], width: 10 },
+    ];
+    expect(assemblePageText(items)).toBe('A\nB');
+  });
+
+  it('hasEOL 이 거짓이면 같은 줄로 이어 붙인다 (y 가 조금 흔들려도)', () => {
+    const items: TextItemLike[] = [
+      { str: 'A', transform: [10, 0, 0, 10, 0, 700], width: 10, hasEOL: false },
+      { str: 'B', transform: [10, 0, 0, 10, 10, 698], width: 10, hasEOL: false },
+    ];
+    expect(assemblePageText(items)).toBe('AB');
+  });
+
+  // 국문 교재·논문에서 페이지마다 나오는 형태 — 회전 텍스트보다 훨씬 흔하다.
+  it('각주 번호(작은 첨자)가 문장 중간에 줄바꿈을 만들지 않는다', () => {
+    // 본문 12pt → 각주 번호 7pt(위로 4pt) → 본문 복귀. 임계를 첨자 글꼴(7)로 잡으면 3.5 가 되어
+    // 4pt 이동이 줄바꿈으로 오판된다. 줄의 본문 글꼴(12)을 기준으로 봐야 한다.
+    const items: TextItemLike[] = [
+      { str: '프로세스는 실행 중인 프로그램이다', transform: [12, 0, 0, 12, 0, 700], width: 200 },
+      { str: '1)', transform: [7, 0, 0, 7, 200, 704], width: 8 },
+      { str: ' 따라서 메모리를 점유한다', transform: [12, 0, 0, 12, 208, 700], width: 150 },
+    ];
+    expect(assemblePageText(items)).not.toContain('\n');
+  });
+
+  it('아래첨자(수식)도 마찬가지', () => {
+    const items: TextItemLike[] = [
+      { str: 'x', transform: [12, 0, 0, 12, 0, 700], width: 8 },
+      { str: 'i', transform: [7, 0, 0, 7, 8, 696], width: 4 },
+      { str: '의 값', transform: [12, 0, 0, 12, 12, 700], width: 30 },
+    ];
+    expect(assemblePageText(items)).not.toContain('\n');
+  });
+
+  it('90° 회전 텍스트가 글자마다 줄바꿈되지 않는다 (진행 방향 = y)', () => {
+    // 세로 축 라벨: 글자가 +y 로 전진한다. 이전 구현은 y 차이를 줄바꿈으로 봐 "정\n확\n도" 가 됐다.
+    const items: TextItemLike[] = [
+      { str: '정', transform: [0, 10, -10, 0, 100, 700], width: 10 },
+      { str: '확', transform: [0, 10, -10, 0, 100, 710], width: 10 },
+      { str: '도', transform: [0, 10, -10, 0, 100, 720], width: 10 },
+    ];
+    expect(assemblePageText(items)).toBe('정확도');
+  });
+
+  it('회전 텍스트에서 줄이 바뀌면(진행 방향의 수직으로 이동) 줄바꿈한다', () => {
+    // 90° 회전에서 다음 줄은 x 로 이동한다.
+    const items: TextItemLike[] = [
+      { str: '첫줄', transform: [0, 10, -10, 0, 100, 700], width: 20 },
+      { str: '둘째줄', transform: [0, 10, -10, 0, 130, 700], width: 30 },
+    ];
+    expect(assemblePageText(items)).toBe('첫줄\n둘째줄');
+  });
+
+  it('회전 텍스트의 같은 줄 내 간격은 공백으로 (진행 방향 기준)', () => {
+    const items: TextItemLike[] = [
+      { str: '국어', transform: [0, 10, -10, 0, 100, 700], width: 20 },
+      { str: '영어', transform: [0, 10, -10, 0, 100, 760], width: 20 }, // 진행방향으로 크게 떨어짐
+    ];
+    expect(assemblePageText(items)).toBe('국어 영어');
+  });
+});
+
 describe('assemblePageText — 회전 텍스트 크기 판정 (QA22 백로그)', () => {
   // 이전 구현은 `|a| || |d| || 12` 라 90° 회전(a=d=0)에서 **항상 12** 로 폴백했다.
   // 세로 축 라벨·측면 표·워터마크가 흔한 논문/도면 PDF 에서 임계가 실제 크기와 어긋난다.
@@ -80,9 +182,14 @@ describe('assemblePageText — 회전 텍스트 크기 판정 (QA22 백로그)',
     expect(assemblePageText(items)).toBe('세로');
   });
 
-  it('작은 글자(6)의 90° 회전: 12 폴백이면 붙어버리던 줄이 분리된다', () => {
-    // y 간격 4 — 실제 크기 6 기준 임계 3 초과라 줄바꿈, 옛 폴백 12 기준 임계 6 이면 같은 줄.
-    const items = [it90('A', 6, 100, 700, 6), it90('B', 6, 100, 696, 6)];
+  // ⚠️ 이 케이스의 픽스처·기대값은 QA23 에서 교정됐다. v0.31.39 가 세운 원래 형태는
+  // "회전 텍스트에서 **y 차이 = 줄바꿈**" 이라는 옛 모델을 전제로 `A\nB` 를 기대했는데, 90° 회전에서
+  // y 이동은 **문자 진행 방향**이므로 줄바꿈이 아니다(그 모델이 "정확도"를 "정\n확\n도"로 만들던
+  // 근인이다). 검증 의도(작은 회전 글자의 크기를 12 로 폴백하지 않는가)는 줄 간격 판정으로 유지한다.
+  it('작은 글자(6)의 90° 회전: 줄 간격 판정이 실제 크기(6) 기준이다', () => {
+    // 진행 방향의 **수직**(=x)으로 4 이동: 실제 크기 6 기준 임계 3 초과 → 줄바꿈.
+    // 옛 폴백 12 였다면 임계 6 이라 같은 줄로 붙었다.
+    const items = [it90('A', 6, 100, 700, 6), it90('B', 6, 104, 700, 6)];
     expect(assemblePageText(items)).toBe('A\nB');
   });
 
@@ -94,12 +201,15 @@ describe('assemblePageText — 회전 텍스트 크기 판정 (QA22 백로그)',
     expect(assemblePageText(items)).toBe('세로');
   });
 
-  it('임의 각도(45°)도 회전 전 크기를 복원한다', () => {
-    // s=20, θ=45° → a=b=14.142. 옛 구현은 a(14.142)를 써 크기를 과소평가했다.
+  it('임의 각도(45°)도 회전 전 크기를 복원하고 진행 방향을 따른다', () => {
+    // s=20, θ=45° → a=b=14.142. hypot(a,b)=20 이라야 임계가 맞는다(옛 구현은 a 만 봐 과소평가).
+    // 다음 글자는 **45° 방향으로 폭(20)만큼** 전진한다 — 이전 픽스처는 y 만 움직여(진행 방향의
+    // 수직 성분이 큰 배치) 옛 y-차 모델에서만 같은 줄로 보이던 형태였다.
     const s = 20, k = s * Math.SQRT1_2;
+    const step = 20 * Math.SQRT1_2; // 진행 방향 성분
     const items: TextItemLike[] = [
       { str: '기', transform: [k, k, -k, k, 0, 700], width: 20 },
-      { str: '울', transform: [k, k, -k, k, 14, 691], width: 20 }, // y 간격 9 < 20×0.5 → 같은 줄
+      { str: '울', transform: [k, k, -k, k, step, 700 + step], width: 20 },
     ];
     expect(assemblePageText(items)).toBe('기울');
   });

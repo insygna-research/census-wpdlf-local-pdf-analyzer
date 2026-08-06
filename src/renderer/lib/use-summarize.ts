@@ -42,10 +42,52 @@ export function labelParagraphsWithPages(pageTexts: string[]): string {
     const label = `[p.${pageIdx + 1}]`;
     const paragraphs = pageText.split(/\n\n+/).map((p) => p.trim()).filter(Boolean);
     for (const para of paragraphs) {
-      labeled.push(`${label} ${para}`);
+      // QA23(C-MED): 라벨은 **단락 앞에 한 번만** 붙는다. 그런데 마크다운 표 위주의 OCR 페이지는
+      // 빈 줄이 없어 한 페이지가 통째로 한 단락이 되고, 그 단락이 청킹 예산(한글 기준 ~6000자)을
+      // 넘으면 **두 번째 조각부터 라벨이 사라진다** — 그 조각에서 나온 요약 문장은 인용을 달 수
+      // 없거나 청크에 섞인 다른 페이지 라벨을 잘못 가져간다. OCR 상한이 4000 이던 시절엔 한
+      // 페이지가 6000자를 넘을 수 없어 구조적으로 불가능했던 경로다(v0.31.39 상향의 부작용).
+      // 긴 단락은 라벨을 반복해 붙인 조각으로 나눠, 어느 청크에 담기든 출처가 남게 한다.
+      for (const segment of splitLongParagraph(para)) {
+        labeled.push(`${label} ${segment}`);
+      }
     }
   });
   return labeled.join('\n\n');
+}
+
+/**
+ * 라벨 1개가 감당할 최대 본문 길이. 청크 예산(기본 4000토큰 × 한글 1.5자/토큰 = 6000자)보다
+ * 넉넉히 작아야 **모든 청크가 최소 하나의 라벨을 포함**한다. 표 행·문장이 잘리지 않도록
+ * 줄 경계를 우선 사용하고, 그래도 초과하면(줄바꿈 없는 거대 텍스트) 하드 절단한다.
+ */
+const MAX_LABELED_SEGMENT = 1500;
+
+function splitLongParagraph(para: string): string[] {
+  if (para.length <= MAX_LABELED_SEGMENT) return [para];
+  const segments: string[] = [];
+  let current = '';
+  for (const line of para.split('\n')) {
+    // 줄 하나가 이미 상한을 넘으면 그 줄만 하드 절단(코드포인트 경계는 slice 가 보장하지 않으므로
+    // Array.from 으로 문자 단위 분할 — 서로게이트 페어가 쪼개지면 깨진 글자가 프롬프트에 들어간다).
+    if (line.length > MAX_LABELED_SEGMENT) {
+      if (current) { segments.push(current); current = ''; }
+      const chars = Array.from(line);
+      for (let i = 0; i < chars.length; i += MAX_LABELED_SEGMENT) {
+        segments.push(chars.slice(i, i + MAX_LABELED_SEGMENT).join(''));
+      }
+      continue;
+    }
+    const next = current ? `${current}\n${line}` : line;
+    if (next.length > MAX_LABELED_SEGMENT) {
+      segments.push(current);
+      current = line;
+    } else {
+      current = next;
+    }
+  }
+  if (current) segments.push(current);
+  return segments;
 }
 
 /**

@@ -1,5 +1,5 @@
 import { useAppStore } from './store';
-import { handlePdfData } from './pdf-parser';
+import { handlePdfData, notifyEmptyPages } from './pdf-parser';
 import { persistCurrentSession, restoreSessionForDocument } from './use-session';
 import { t } from './i18n';
 import type { OpenTab, PdfDocument, PersistedSession } from '../types';
@@ -143,6 +143,11 @@ async function restoreTabFromSession(tab: OpenTab): Promise<boolean> {
   void restoreSessionForDocument(doc);
   s.setError(null);
   s.setNotice(null);
+  // QA23(C-MED): 파싱 시점의 "N페이지가 비어 있음" 통지는 **1회성**이라 세션에 남지 않는다.
+  // 그래서 200쪽 중 150쪽이 OCR 실패로 빈 채 저장된 문서도 재오픈하면 **완전한 문서처럼** 보이고,
+  // 그 위에서 요약·RAG·Q&A 가 계속 돈다(QA22 가 닫으려던 무음 손실이 두 번째 세션부터 부활).
+  // 판정 입력(pageTexts)이 세션에 그대로 있으므로 복원 시 다시 계산해 알린다.
+  notifyEmptyPages(doc.pageTexts, doc.isOcr ? 'pdf.ocrPartialFailNotice' : 'pdf.emptyPagesNotice');
   return true;
 }
 

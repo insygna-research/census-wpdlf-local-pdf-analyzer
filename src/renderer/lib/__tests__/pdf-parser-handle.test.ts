@@ -203,6 +203,36 @@ describe('handlePdfData — 성공 오케스트레이션', () => {
       .toBe(`${seg('가')}${seg('나')}\n${seg('다')} ${seg('라')}`);
   });
 
+  // QA23(C-MED) 배선: 검사 예산이 실제 파싱 루프에 걸려 있는지. 순수 판정만 테스트하면
+  // 호출을 떼는 뮤테이션이 통과한다(이번 사이클 dedup 배선에서 겪은 형태).
+  it('배선: 채택되지 않는 이미지만 반복돼도 페이지 열기가 무한히 계속되지 않는다', async () => {
+    // 모든 이미지가 MAX_IMAGE_PIXELS 초과로 거절되는 문서(300 DPI 스캔) — 채택 수는 영원히 0.
+    const huge = { width: 3000, height: 3000, data: new Uint8ClampedArray(4), kind: 3 };
+    const opsPerPage = 40;
+    const getOperatorList = vi.fn(() => Promise.resolve({
+      fnArray: new Array(opsPerPage).fill(85),                       // OPS.paintImageXObject
+      argsArray: new Array(opsPerPage).fill(['img_dup']),
+    }));
+    const page = {
+      getTextContent: () => Promise.resolve({ items: [{ str: 'A'.repeat(80), transform: [12, 0, 0, 12, 0, 700], width: 100 }] }),
+      getOperatorList,
+      objs: { get: (_n: string, cb: (o: unknown) => void) => cb(huge) },
+      getViewport: () => ({ width: 600, height: 800 }),
+      render: () => ({ promise: Promise.resolve() }),
+      cleanup: () => {},
+    };
+    P.getDocument.mockReturnValue({
+      promise: Promise.resolve({ numPages: 60, getPage: vi.fn(() => Promise.resolve(page)), destroy: vi.fn(() => Promise.resolve()) }),
+    });
+    useAppStore.setState({ settings: { ...DEFAULT_SETTINGS, provider: 'ollama', enableOcrFallback: false, enableImageAnalysis: true } });
+
+    await handlePdfData(pdfBuf(), 'scan.pdf', '/d/scan.pdf');
+
+    // 예산(400 검사)이 페이지당 40장이면 10페이지에서 소진 — 60페이지 전부를 열지 않아야 한다.
+    expect(getOperatorList.mock.calls.length).toBeLessThan(60);
+    expect(useAppStore.getState().document?.images).toEqual([]); // 전량 거절은 종전대로
+  });
+
   it('기존 문서가 있으면 새 문서 반영 전에 persist flush', async () => {
     useAppStore.setState({ document: { id: 'old', fileName: 'old.pdf', filePath: '/d/old.pdf', pageCount: 1, extractedText: 'x', pageTexts: ['x'], chapters: [], images: [], createdAt: new Date() } });
     await handlePdfData(pdfBuf(), 'new.pdf', '/d/new.pdf');
