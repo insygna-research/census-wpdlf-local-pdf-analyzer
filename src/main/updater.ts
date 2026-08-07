@@ -97,6 +97,16 @@ export interface UpdaterDeps {
    * **종료 전에** 막아야 한다. 백신 격리로 실제로 흔한 시나리오다.
    */
   installerExists?: (filePath: string) => boolean;
+  /**
+   * 업데이터 캐시(받아둔 인스톨러·blockmap·update-info)를 비운다.
+   *
+   * **체크섬 실패에서만** 호출한다. 실기기 검증(2026-08-07)에서 차등 다운로드가 어긋난 캐시로
+   * 손상된 인스톨러를 만들어냈고(크기 2바이트 차이 + sha512 불일치) 검증이 이를 거부했는데,
+   * 손상된 파일이 캐시에 남아 **다음 시도를 계속 오염**시킬 수 있었다. 체크섬이 틀렸다는 건
+   * 디스크의 것을 믿을 수 없다는 뜻이므로 지우고 새로 받는 것이 유일한 회복이다.
+   * 네트워크 오류 등 다른 실패에는 호출하지 않는다 — 부분 다운로드 재개 여지를 없앨 이유가 없다.
+   */
+  clearUpdaterCache?: () => void;
   now?: () => number;
 }
 
@@ -135,6 +145,21 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
   // update-downloaded 가 알려준 실제 인스톨러 경로. 설치 직전 존재 확인용(없으면 확인 생략).
   let downloadedFilePath: string | null = null;
 
+  /**
+   * 실패를 상태에 반영한다. 체크섬 실패면 손상된 캐시를 함께 비운다(위 clearUpdaterCache 주석).
+   * 정리 실패는 삼킨다 — best-effort 이고, 여기서 throw 하면 실패 표면화 자체를 잃는다.
+   */
+  function applyError(errorKey: string): void {
+    if (errorKey === 'updateChecksum') {
+      try {
+        deps.clearUpdaterCache?.();
+      } catch (err) {
+        console.error('[update] updater cache 정리 실패:', err);
+      }
+    }
+    apply({ type: 'error', errorKey });
+  }
+
   function apply(event: UpdateEvent): void {
     const next = nextUpdateState(state, event);
     // 리듀서가 동일 참조를 반환하면 실질 변화 없음 — 브로드캐스트 생략(다운로드 중 초당 수십 회
@@ -172,7 +197,7 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
       // 이전에는 15초 백스톱 타이머만 롤백을 수행해 그 사이 창 X 닫기가 flush 표식을 타고
       // 종료 flush 를 우회했다(실데이터 손실). 신호가 오면 기다리지 않는다.
       if (installing) finishAbortedInstall();
-      apply({ type: 'error', errorKey: classifyUpdateError(err) });
+      applyError(classifyUpdateError(err));
     });
   }
 
@@ -208,13 +233,18 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
     } catch (err) {
       // autoUpdater 는 실패 시 reject 와 'error' 이벤트를 모두 낼 수 있다 — 리듀서가 동일
       // errorKey 의 중복 전이를 흡수하므로 이중 처리해도 브로드캐스트는 1회.
-      apply({ type: 'error', errorKey: classifyUpdateError(err) });
+      applyError(classifyUpdateError(err));
     }
     return state;
   }
 
   async function download(): Promise<UpdateState> {
-    if (!supported || !canDownload(state.status)) return state;
+    // newVersion 을 반드시 함께 넘긴다 — QA19(C-LOW)가 정책으로 열어둔 "실패 후 재확인 없이
+    // 재시도" 는 `status==='error' && newVersion!==null` 이 조건인데, 인자를 빠뜨리면 기본값
+    // null 때문에 **항상 false** 가 되어 재시도 버튼이 조용히 죽는다(2026-08-07 실기기 발견:
+    // 다운로드 실패 후 "다시 시도" 를 눌러도 아무 반응이 없었다). 정책·UI 는 있는데 배선만 닫혀
+    // 있던 형태.
+    if (!supported || !canDownload(state.status, state.newVersion)) return state;
     apply({ type: 'download-started' });
     try {
       await deps.autoUpdater.downloadUpdate();
@@ -225,7 +255,7 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
         apply({ type: 'downloaded', version: state.newVersion ?? '' });
       }
     } catch (err) {
-      apply({ type: 'error', errorKey: classifyUpdateError(err) });
+      applyError(classifyUpdateError(err));
     }
     return state;
   }
@@ -290,14 +320,14 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
         installAbortTimer = null;
         if (!installing) return; // 이미 error 신호로 정리됨(QA23) — 거짓 실패를 덧씌우지 않는다.
         finishAbortedInstall();
-        apply({ type: 'error', errorKey: 'updateInstallFailed' });
+        applyError('updateInstallFailed');
       }, INSTALL_QUIT_GRACE_MS);
       // 종료를 막지 않도록 unref (Electron 종료 시퀀스가 타이머를 기다리지 않게).
       installAbortTimer.unref?.();
     } catch (err) {
       // 방어적 — 현행 electron-updater 는 여기로 오지 않지만 구현이 바뀔 수 있다.
       finishAbortedInstall();
-      apply({ type: 'error', errorKey: classifyUpdateError(err) });
+      applyError(classifyUpdateError(err));
     }
     return state;
   }

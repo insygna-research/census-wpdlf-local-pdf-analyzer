@@ -195,6 +195,85 @@ describe('download', () => {
   });
 });
 
+// 실기기 검증(2026-08-07)에서 발견: 다운로드가 실패한 뒤 배너의 "다시 시도" 를 눌러도
+// **아무 반응이 없었다**. QA19(C-LOW)가 정책(canDownload)으로 error 후 재시도를 일부러 열어놨고
+// v0.31.40 배너가 그 버튼을 노출하는데, 정작 download() 가 게이트에 newVersion 을 넘기지 않아
+// (기본값 null) `status==='error' && newVersion!==null` 이 **항상 false** 였다.
+// 정책은 열려 있는데 배선이 닫고 있던 형태 — 세 층(정책·오케스트레이션·UI)이 다 있는데 동작하지 않았다.
+describe('다운로드 실패 후 재시도', () => {
+  async function toDownloadError(ctx: ReturnType<typeof setup>) {
+    await toAvailable(ctx, '1.1.0');
+    ctx.au.downloadUpdate.mockRejectedValueOnce(new Error('ENOTFOUND'));
+    await ctx.service.download();
+  }
+
+  it('확인된 버전이 남아 있으면 재시도가 실제로 다운로드를 시작한다', async () => {
+    const ctx = setup();
+    await toDownloadError(ctx);
+    expect(ctx.service.getState()).toMatchObject({ status: 'error', newVersion: '1.1.0' });
+
+    ctx.au.downloadUpdate.mockResolvedValueOnce([]);
+    await ctx.service.download();
+
+    expect(ctx.au.downloadUpdate, '재시도가 조용히 폐기되면 버튼이 죽은 것이다').toHaveBeenCalledTimes(2);
+  });
+
+  it('확인된 버전이 없으면 재시도하지 않는다 (재확인이 먼저)', async () => {
+    const ctx = setup();
+    await ctx.service.check('manual');
+    ctx.emit('error', new Error('ENOTFOUND')); // available 없이 확인 자체가 실패 → newVersion 없음
+    const before = ctx.au.downloadUpdate.mock.calls.length;
+    await ctx.service.download();
+    expect(ctx.au.downloadUpdate.mock.calls.length).toBe(before);
+  });
+});
+
+// 실기기 검증(2026-08-07): 차등 다운로드가 어긋난 캐시로 **손상된 인스톨러**를 만들어냈고
+// (크기 2바이트 차이 + sha512 불일치) 체크섬 검증이 이를 거부했다 — 여기까지는 옳은 동작이다.
+// 문제는 그다음: 손상된 temp 파일이 캐시에 남아 **다음 시도를 계속 오염**시킬 수 있다.
+// 체크섬이 틀렸다는 건 디스크의 것을 믿을 수 없다는 뜻이므로, 지우고 새로 받는 것이 유일한 회복이다.
+describe('체크섬 실패 시 캐시 정리', () => {
+  it('updateChecksum 오류면 업데이터 캐시를 비운다', async () => {
+    const clearCache = vi.fn();
+    const ctx = setup({ clearUpdaterCache: clearCache });
+    await toAvailable(ctx, '1.1.0');
+    ctx.au.downloadUpdate.mockRejectedValueOnce(new Error('sha512 checksum mismatch'));
+
+    await ctx.service.download();
+
+    expect(ctx.service.getState().errorKey).toBe('updateChecksum');
+    expect(clearCache, '손상된 캐시를 남기면 다음 시도도 같은 결과가 된다').toHaveBeenCalledTimes(1);
+  });
+
+  it('네트워크 오류 등 다른 실패에서는 캐시를 건드리지 않는다 (부분 다운로드 재개 여지 보존)', async () => {
+    const clearCache = vi.fn();
+    const ctx = setup({ clearUpdaterCache: clearCache });
+    await toAvailable(ctx, '1.1.0');
+    ctx.au.downloadUpdate.mockRejectedValueOnce(new Error('ENOTFOUND'));
+
+    await ctx.service.download();
+
+    expect(ctx.service.getState().errorKey).toBe('updateNetwork');
+    expect(clearCache).not.toHaveBeenCalled();
+  });
+
+  it('정리 자체가 실패해도 상태 전이는 정상 진행한다 (best-effort)', async () => {
+    const ctx = setup({ clearUpdaterCache: () => { throw new Error('EBUSY'); } });
+    await toAvailable(ctx, '1.1.0');
+    ctx.au.downloadUpdate.mockRejectedValueOnce(new Error('sha512 mismatch'));
+
+    await expect(ctx.service.download()).resolves.toMatchObject({ errorKey: 'updateChecksum' });
+  });
+
+  it('체크섬 오류가 이벤트로 와도 정리한다 (reject 경로 외)', async () => {
+    const clearCache = vi.fn();
+    const ctx = setup({ clearUpdaterCache: clearCache });
+    await toAvailable(ctx, '1.1.0');
+    ctx.emit('error', new Error('sha512 checksum mismatch'));
+    expect(clearCache).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('install — 데이터 손실 방어', () => {
   async function toDownloaded(ctx: ReturnType<typeof setup>) {
     await toAvailable(ctx);

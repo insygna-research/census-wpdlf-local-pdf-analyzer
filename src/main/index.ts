@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 // R38 P1-2: sync `fs` 는 API 키 저장 로직과 함께 api-keys-store.ts 로 이동. 본 파일은 fsp 만 사용.
 import fsp from 'fs/promises';
 // 동기 확인이 필요한 유일한 지점 — updater 의 설치 직전 인스톨러 실재 확인(deps 로 주입).
-import { existsSync } from 'fs';
+import { existsSync, rmSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { OllamaManager } from './ollama-manager';
 import { decideCloseAction, selectFlushTargets } from './window-flush-policy';
@@ -517,6 +517,30 @@ app.on('before-quit', (e) => {
 // quitAndInstall 의 즉시 종료가 QA10/16/17/18 이 반복해서 막아온 마지막 델타 소실을 재현한다.
 let updaterService: UpdaterService | null = null;
 
+/**
+ * electron-updater 캐시 디렉터리를 비운다 — 체크섬 실패 시에만 호출된다(updater.ts 참조).
+ *
+ * 경로 규약: `%LOCALAPPDATA%\<updaterCacheDirName>` (app-update.yml 의 updaterCacheDirName,
+ * electron-builder 가 productName 기반으로 생성). electron-updater 가 이 경로를 API 로 노출하지
+ * 않아 규약으로 계산한다 — 그래서 **삭제 전에 우리 앱의 캐시가 맞는지 이름을 검증**한다
+ * (잘못 계산된 경로로 rm -rf 하는 것이 이 함수의 유일한 실질 위험이다).
+ */
+function clearUpdaterCache(): void {
+  const base = app.getPath('appData'); // %APPDATA%
+  const local = path.join(path.dirname(base), 'Local'); // %LOCALAPPDATA%
+  const dirName = `${app.getName()}-updater`;
+  const target = path.join(local, dirName);
+  // 방어: 계산된 경로가 기대 형태가 아니면 손대지 않는다.
+  if (!dirName.endsWith('-updater') || dirName.length <= '-updater'.length) return;
+  if (!existsSync(target)) return;
+  try {
+    rmSync(target, { recursive: true, force: true });
+    console.log('[update] 손상된 업데이터 캐시를 정리했습니다:', target);
+  } catch (err) {
+    console.error('[update] 업데이터 캐시 정리 실패:', err);
+  }
+}
+
 function broadcastUpdateState(state: UpdateState): void {
   for (const win of BrowserWindow.getAllWindows()) {
     if (win.isDestroyed()) continue;
@@ -548,6 +572,9 @@ function getUpdaterService(): UpdaterService {
       // 설치 직전 인스톨러 실재 확인(2026-08-07 실기기 검증에서 발견한 무음 종료 차단).
       // 동기 확인이어야 한다 — quitAndInstall 호출 전에 결론이 나야 하기 때문.
       installerExists: (filePath: string) => existsSync(filePath),
+      // 체크섬 실패 = 디스크의 것을 믿을 수 없다 → 손상된 캐시를 비워 다음 시도가 전체
+      // 다운로드로 깨끗하게 받게 한다(2026-08-07 실기기: 어긋난 차등 캐시가 손상본을 만들었다).
+      clearUpdaterCache,
     });
     updaterService.wire();
   }

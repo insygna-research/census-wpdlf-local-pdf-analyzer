@@ -241,6 +241,12 @@ describe('updater 배선 — 인스톨러 실재 확인 주입', () => {
   it('onInstallAborted 는 표식 롤백 함수를 그대로 넘긴다', () => {
     expect(MAIN_SRC).toMatch(/onInstallAborted:\s*revertFlushMarks/);
   });
+
+  it('clearUpdaterCache 를 주입한다 (체크섬 실패 시 손상 캐시 정리)', () => {
+    expect(MAIN_SRC).toMatch(/clearUpdaterCache,/);
+    // 계산된 경로로 지우므로 이름 검증 가드가 반드시 있어야 한다.
+    expect(MAIN_SRC).toMatch(/dirName\.endsWith\('-updater'\)/);
+  });
 });
 
 describe('revertFlushMarks — 설치 무산 롤백 (QA19 본문 검증)', () => {
