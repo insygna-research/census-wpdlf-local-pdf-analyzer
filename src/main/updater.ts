@@ -29,8 +29,11 @@ import {
 } from './update-policy';
 import type { UpdateState } from '../shared/update-types';
 
-/** autoUpdater 이벤트 페이로드 중 실제로 읽는 필드만 (electron-updater 의 UpdateInfo 부분집합) */
-export interface UpdateInfoLike { version?: string }
+/**
+ * autoUpdater 이벤트 페이로드 중 실제로 읽는 필드만 (electron-updater 의 UpdateInfo 부분집합).
+ * `downloadedFile` 은 `update-downloaded` 에만 실려 오는 실제 인스톨러 경로(UpdateDownloadedEvent).
+ */
+export interface UpdateInfoLike { version?: string; downloadedFile?: string }
 export interface DownloadProgressLike { percent?: number }
 
 /**
@@ -84,6 +87,16 @@ export interface UpdaterDeps {
    * 건너뛰고** 마지막 델타가 소실된다(QA16 이 고친 경로의 부활). 소유자가 표식을 되돌린다.
    */
   onInstallAborted?: () => void;
+  /**
+   * 받아둔 인스톨러가 디스크에 실재하는지(기본 fs.existsSync 주입).
+   *
+   * 실기기 검증(2026-08-07)에서 발견: 파일이 사라진 상태로 설치를 누르면 **앱이 그냥 꺼지고 아무
+   * 설명이 남지 않는다**. electron-updater 는 경로만 읽고 존재를 확인하지 않은 채 spawn 하는데,
+   * spawn 실패는 비동기라 `install()` 은 이미 성공을 반환하고 `app.quit()` 이 예약되기 때문이다.
+   * 앱이 죽어버리면 이 모듈의 실패 처리(에러 표시·재시도·표식 롤백)가 개입할 여지가 없다 —
+   * **종료 전에** 막아야 한다. 백신 격리로 실제로 흔한 시나리오다.
+   */
+  installerExists?: (filePath: string) => boolean;
   now?: () => number;
 }
 
@@ -119,6 +132,8 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
   let installing = false;
   // 설치 무산 감지 타이머(INSTALL_QUIT_GRACE_MS). 정상 경로에서는 앱이 먼저 죽어 발화하지 않는다.
   let installAbortTimer: ReturnType<typeof setTimeout> | null = null;
+  // update-downloaded 가 알려준 실제 인스톨러 경로. 설치 직전 존재 확인용(없으면 확인 생략).
+  let downloadedFilePath: string | null = null;
 
   function apply(event: UpdateEvent): void {
     const next = nextUpdateState(state, event);
@@ -147,6 +162,8 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
       apply({ type: 'progress', percent: Number(progress?.percent ?? 0) });
     });
     deps.autoUpdater.on('update-downloaded', (info) => {
+      // 설치 직전 존재 확인에 쓸 실제 파일 경로를 보관(없으면 확인을 건너뛴다 — 아래 install 참조).
+      downloadedFilePath = typeof info?.downloadedFile === 'string' ? info.downloadedFile : null;
       apply({ type: 'downloaded', version: String(info?.version ?? state.newVersion ?? '') });
     });
     deps.autoUpdater.on('error', (err) => {
@@ -236,6 +253,20 @@ export function createUpdaterService(deps: UpdaterDeps): UpdaterService {
 
   async function install(): Promise<UpdateState> {
     if (!supported || !canInstall(state.status) || installing) return state;
+    // 종료를 시작하기 **전에** 인스톨러 실재를 확인한다. quitAndInstall 은 파일이 없어도
+    // app.quit() 을 예약하므로(spawn 실패는 비동기), 여기서 막지 않으면 앱이 조용히 꺼지고
+    // 사용자는 "설치를 눌렀는데 다시 켜니 구버전" 만 겪는다(실기기 검증 2026-08-07).
+    // 경로를 못 얻은 경우(downloadedFile 미제공)에는 확인을 건너뛴다 — 확인 불가를 이유로
+    // 설치를 막으면 그게 더 나쁜 회귀다.
+    if (downloadedFilePath && deps.installerExists && !deps.installerExists(downloadedFilePath)) {
+      try {
+        deps.onInstallAborted?.(); // flush 표식 롤백 — 설치 대기 상태로 남지 않도록
+      } catch (err) {
+        console.error('[update] onInstallAborted failed:', err);
+      }
+      apply({ type: 'installer-missing' });
+      return state;
+    }
     installing = true;
     // 설치 구간을 상태로 드러낸다 — 버튼이 "설치 중"으로 바뀌어 재클릭이 조용히 폐기되지 않는다.
     apply({ type: 'install-started' });

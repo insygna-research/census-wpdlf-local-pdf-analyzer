@@ -6,6 +6,8 @@ import path from 'path';
 import { fileURLToPath, pathToFileURL } from 'url';
 // R38 P1-2: sync `fs` 는 API 키 저장 로직과 함께 api-keys-store.ts 로 이동. 본 파일은 fsp 만 사용.
 import fsp from 'fs/promises';
+// 동기 확인이 필요한 유일한 지점 — updater 의 설치 직전 인스톨러 실재 확인(deps 로 주입).
+import { existsSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { OllamaManager } from './ollama-manager';
 import { decideCloseAction, selectFlushTargets } from './window-flush-policy';
@@ -543,6 +545,9 @@ function getUpdaterService(): UpdaterService {
       // QA16 이 고친 바로 그 경로가 부활한다. 앱은 계속 살아있으므로 다음 종료를 위해
       // 창들을 "아직 flush 안 됨" 상태로 되돌려야 한다.
       onInstallAborted: revertFlushMarks,
+      // 설치 직전 인스톨러 실재 확인(2026-08-07 실기기 검증에서 발견한 무음 종료 차단).
+      // 동기 확인이어야 한다 — quitAndInstall 호출 전에 결론이 나야 하기 때문.
+      installerExists: (filePath: string) => existsSync(filePath),
     });
     updaterService.wire();
   }

@@ -568,6 +568,12 @@ export const _translations = {
     en: 'The downloaded file failed its integrity check. Please try again.',
   },
   'mainerr.updateUnknown': { ko: '업데이트에 실패했습니다.', en: 'The update failed.' },
+  // 2026-08-07 실기기 검증: 받아둔 인스톨러가 사라지면(백신 격리 등) 앱이 조용히 꺼졌다.
+  // 이제 종료 전에 막고 이 문구로 알린다 — 회복 수단(재다운로드)까지 함께 안내.
+  'mainerr.updateInstallerMissing': {
+    ko: '받아둔 설치 파일을 찾을 수 없습니다(백신이 격리했을 수 있습니다). 다시 다운로드해주세요.',
+    en: 'The downloaded installer is missing (antivirus may have quarantined it). Please download it again.',
+  },
   'mainerr.updateInstallFailed': {
     ko: '설치를 시작하지 못했습니다. 내려받은 설치 파일이 백신에 격리되었거나 삭제되었을 수 있습니다 — 다시 다운로드하거나 릴리즈 페이지에서 직접 설치해주세요.',
     en: 'The installer could not be started. The downloaded file may have been quarantined by antivirus or removed — download it again, or install manually from the releases page.',

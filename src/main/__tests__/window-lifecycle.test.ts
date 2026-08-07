@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // QA23(B-LOW → 별도 작업): index.ts 의 **합성 층** 행위 검증.
@@ -224,6 +226,20 @@ describe('flushRenderersBeforeQuit — 대상 선정 (QA18 회귀 가드)', () =
 
     await flushRenderersBeforeQuit(); // 대상 0개 → 즉시 resolve
     expect(win.webContents.sent).not.toContain('app:flush-before-quit');
+  });
+});
+
+// 배선 가드: updater 는 installerExists 를 **주입받아야만** 확인할 수 있다. 순수 판정이 맞아도
+// index.ts 가 주입하지 않으면 실기기에서는 그대로 앱이 조용히 꺼진다(2026-08-07 에 겪은 그것).
+describe('updater 배선 — 인스톨러 실재 확인 주입', () => {
+  const MAIN_SRC = readFileSync(resolve(import.meta.dirname, '../index.ts'), 'utf-8');
+
+  it('installerExists 를 실제 파일 확인으로 주입한다', () => {
+    expect(MAIN_SRC).toMatch(/installerExists:\s*\(filePath: string\) =>\s*existsSync\(filePath\)/);
+  });
+
+  it('onInstallAborted 는 표식 롤백 함수를 그대로 넘긴다', () => {
+    expect(MAIN_SRC).toMatch(/onInstallAborted:\s*revertFlushMarks/);
   });
 });
 

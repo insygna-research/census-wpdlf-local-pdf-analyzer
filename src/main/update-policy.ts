@@ -23,6 +23,8 @@ export type UpdateEvent =
   | { type: 'downloaded'; version: string }
   /** 설치 요청 접수(QA23) — 실제 종료까지의 구간을 상태로 드러낸다. */
   | { type: 'install-started' }
+  /** 받아둔 인스톨러가 사라짐(백신 격리·수동 삭제) — 설치 불가, 재다운로드가 유일한 회복. */
+  | { type: 'installer-missing' }
   | { type: 'error'; errorKey: string };
 
 /**
@@ -127,6 +129,14 @@ export const UPDATE_ERROR_KEYS = [
   'updateUnknown',
   /** QA19(A-MED): quitAndInstall 이 앱을 종료시키지 못했다 — 인스톨러 유실/차단 추정. */
   'updateInstallFailed',
+  /**
+   * 받아둔 인스톨러 파일이 사라졌다(백신 격리·수동 삭제·캐시 정리).
+   *
+   * 실기기 검증(2026-08-07)에서 발견: electron-updater 는 경로만 읽고 **존재를 확인하지 않은 채**
+   * spawn 하는데 실패가 비동기라 `app.quit()` 이 이미 예약된다 → **앱이 그냥 꺼지고 아무 설명이
+   * 남지 않았다**(다시 켜면 구버전). 종료 전에 우리가 막고 이 사유를 남긴다.
+   */
+  'updateInstallerMissing',
 ] as const;
 export type UpdateErrorKey = typeof UPDATE_ERROR_KEYS[number];
 
@@ -210,6 +220,12 @@ export function nextUpdateState(prev: UpdateState, event: UpdateEvent): UpdateSt
       // "설치 준비됨" 그대로라 사용자가 버튼을 다시 누르고, 그 클릭은 내부 잠금에 조용히 폐기된다.
       if (prev.status !== 'downloaded') return prev; // canInstall 과 동일 전제
       return { ...prev, status: 'installing', errorKey: null };
+
+    case 'installer-missing':
+      // 다른 실패와 달리 **downloaded 를 유지하면 안 된다** — 디스크에 인스톨러가 없으므로 설치
+      // 버튼을 남겨두면 눌러도 같은 실패를 반복한다. newVersion 은 보존해 canDownload 가 열리고
+      // (재확인 없이) 재다운로드로 회복할 수 있게 한다.
+      return { ...prev, status: 'error', percent: 0, errorKey: 'updateInstallerMissing' };
 
     case 'error':
       if (prev.status === 'error' && prev.errorKey === event.errorKey) return prev;

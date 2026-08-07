@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createUpdaterService, INSTALL_QUIT_GRACE_MS, type AutoUpdaterLike, type IpcMainLike, type UpdaterDeps } from '../updater';
+import { canDownload } from '../update-policy';
 import type { UpdateState } from '../../shared/update-types';
 
 // updater.ts 행위 검증 — electron / electron-updater 를 주입받으므로 node 환경에서 직접 구동한다.
@@ -198,6 +199,14 @@ describe('install — 데이터 손실 방어', () => {
   async function toDownloaded(ctx: ReturnType<typeof setup>) {
     await toAvailable(ctx);
     await ctx.service.download();
+    // electron-updater 6 의 update-downloaded 는 실제 파일 경로(downloadedFile)를 함께 준다.
+    ctx.emit('update-downloaded', { version: '1.1.0', downloadedFile: 'C:/cache/pending/Setup.exe' });
+  }
+
+  /** downloadedFile 을 싣지 않는 경우(구버전/피드 차이) — 존재 확인을 할 수 없는 상태. */
+  async function toDownloadedWithoutPath(ctx: ReturnType<typeof setup>) {
+    await toAvailable(ctx);
+    await ctx.service.download();
     ctx.emit('update-downloaded', { version: '1.1.0' });
   }
 
@@ -309,6 +318,54 @@ describe('install — 데이터 손실 방어', () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+
+    // QA23 후속(실기기 검증에서 발견, 2026-08-07): 인스톨러 파일이 사라진 상태에서 설치를 누르면
+    // **앱이 그냥 종료되고 아무 설명도 남지 않았다**. electron-updater 는 update-info.json 에서
+    // 경로만 읽고 **파일 존재를 확인하지 않은 채** spawn 을 시도하는데, spawn 실패는 비동기라
+    // `install()` 은 이미 성공을 반환하고 `app.quit()` 이 예약된다. 앱이 죽어버리므로 Tier2 에서
+    // 넣은 처리(즉시 에러 표시·재시도·flush 표식 롤백)가 개입할 여지가 없다 — 앱이 살아 있어야
+    // 동작하기 때문. 백신 격리로 실제로 흔한 시나리오이고, 사용자는 "설치를 눌렀는데 앱만 꺼지고
+    // 다시 켜면 구버전" 을 겪는다. 종료 **전에** 막아야 한다.
+    describe('인스톨러 파일이 사라진 경우', () => {
+      it('quitAndInstall 을 호출하지 않는다 (앱이 조용히 죽지 않도록)', async () => {
+        const ctx = setup({ installerExists: () => false });
+        await toDownloaded(ctx);
+        await ctx.service.install();
+        expect(ctx.au.quitAndInstall, '파일이 없는데 종료를 시작하면 무음 실패가 된다').not.toHaveBeenCalled();
+      });
+
+      it('사유를 남기고 재다운로드가 가능한 상태로 되돌린다', async () => {
+        const ctx = setup({ installerExists: () => false });
+        await toDownloaded(ctx);
+        await ctx.service.install();
+        const s = ctx.service.getState();
+        expect(s.errorKey).toBe('updateInstallerMissing');
+        expect(canDownload(s.status, s.newVersion), '재다운로드 경로가 열려 있어야 한다').toBe(true);
+      });
+
+      it('flush 표식을 되돌린다 (설치 대기 상태로 남지 않도록)', async () => {
+        const onInstallAborted = vi.fn();
+        const ctx = setup({ installerExists: () => false, onInstallAborted });
+        await toDownloaded(ctx);
+        await ctx.service.install();
+        expect(onInstallAborted).toHaveBeenCalledTimes(1);
+      });
+
+      it('파일이 있으면 종전대로 설치를 진행한다 (과잉 차단 방지)', async () => {
+        const ctx = setup({ installerExists: () => true });
+        await toDownloaded(ctx);
+        await ctx.service.install();
+        expect(ctx.au.quitAndInstall).toHaveBeenCalledTimes(1);
+      });
+
+      it('경로를 못 얻은 경우(구버전 이벤트 등)에는 차단하지 않는다', async () => {
+        // downloadedFile 을 싣지 않는 피드/버전에서 설치가 막히면 그게 더 나쁜 회귀다.
+        const ctx = setup({ installerExists: () => false });
+        await toDownloadedWithoutPath(ctx);
+        await ctx.service.install();
+        expect(ctx.au.quitAndInstall).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('설치 요청 즉시 installing 상태가 되어 재클릭이 조용히 폐기되지 않는다', async () => {
