@@ -85,6 +85,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     save: (input: { id?: string; name: string; docHashes: string[] }) =>
       ipcRenderer.invoke('collections:save', input),
     delete: (id: string) => ipcRenderer.invoke('collections:delete', id),
+    touch: (id: string) => ipcRenderer.invoke('collections:touch', id),
   },
   // 자동 업데이트(electron-updater). 모든 조작은 main 이 상태 머신으로 게이트하므로 preload 는
   // 순수 전달만 한다. onStatus 는 check/download 진행을 push 로 받는 채널.
@@ -208,6 +209,8 @@ export type ElectronAPI = {
     list: () => Promise<SavedCollection[]>;
     save: (input: { id?: string; name: string; docHashes: string[] }) => Promise<{ ok: boolean; id?: string }>;
     delete: (id: string) => Promise<{ ok: boolean }>;
+    /** 열기 시 lastAccessed 갱신(최근 사용 표시). best-effort — 실패해도 열기에 영향 없다. */
+    touch: (id: string) => Promise<{ ok: boolean }>;
   };
   update: {
     getState: () => Promise<UpdateState>;

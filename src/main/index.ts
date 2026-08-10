@@ -61,7 +61,7 @@ import { searchPersistedSession, rankSearchResults, MIN_QUERY_LENGTH } from './s
 import type { SessionSaveMeta, GlobalSearchResult, SemanticSearchResponse } from '../shared/session-types';
 import { runSemanticSearch } from './semantic-search';
 // multi-doc Phase 3 (module-1): 컬렉션 영속화. collectionsFile 주입으로 electron-free.
-import { listCollections, saveCollection, deleteCollection } from './collections-store';
+import { listCollections, saveCollection, deleteCollection, touchCollection } from './collections-store';
 
 // 전역 에러 핸들러: unhandled rejection/exception으로 인한 무음 크래시 방지
 process.on('unhandledRejection', (reason) => {
@@ -899,6 +899,12 @@ export function registerIpcHandlers(): void {
 
   ipcMain.handle('collections:delete', async (_event, id: unknown) => {
     return serializeCollectionsWrite(() => deleteCollection(collectionsFile, id));
+  });
+
+  // 열기 시 최근 사용 표시 — 세션의 session:load 내 touchSession 과 같은 역할(collections-store
+  // 주석 참조: 없으면 LRU 가 "최근 편집순" 으로 축출한다). 쓰기이므로 같은 체인에 직렬화한다.
+  ipcMain.handle('collections:touch', async (_event, id: unknown) => {
+    return serializeCollectionsWrite(() => touchCollection(collectionsFile, id, Date.now()));
   });
 
   ipcMain.handle('ollama:status', async () => {

@@ -7,10 +7,11 @@ const api = {
   list: vi.fn(),
   save: vi.fn(),
   delete: vi.fn(),
+  touch: vi.fn(),
 };
 vi.stubGlobal('window', { electronAPI: { collections: api } });
 
-import { listCollections, saveCollection, deleteCollection } from '../collections-client';
+import { listCollections, saveCollection, deleteCollection, touchCollection } from '../collections-client';
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -44,6 +45,15 @@ describe('collections-client', () => {
   it('save: 실패 시 ok:false', async () => {
     api.save.mockRejectedValue(new Error('ipc'));
     expect(await saveCollection({ name: 'x', docHashes: ['a'] })).toEqual({ ok: false });
+  });
+
+  // fire-and-forget 으로 불리므로 rejection 이 새어나가면 unhandled rejection 이 된다.
+  it('touch: 위임 + 실패해도 throw 하지 않고 ok:false', async () => {
+    api.touch.mockResolvedValue({ ok: true });
+    expect(await touchCollection('id1')).toEqual({ ok: true });
+    expect(api.touch).toHaveBeenCalledWith('id1');
+    api.touch.mockRejectedValue(new Error('ipc'));
+    expect(await touchCollection('id1')).toEqual({ ok: false });
   });
 
   it('delete: 위임 + 실패 시 ok:false', async () => {

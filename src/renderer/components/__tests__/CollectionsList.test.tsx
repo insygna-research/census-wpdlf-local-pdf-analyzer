@@ -11,12 +11,14 @@ import userEvent from '@testing-library/user-event';
 const M = vi.hoisted(() => ({
   list: vi.fn(),
   del: vi.fn(() => Promise.resolve({ ok: true })),
+  touch: vi.fn(() => Promise.resolve({ ok: true })),
   openCollection: vi.fn(() => Promise.resolve({ opened: 2, total: 2 })),
   blocked: vi.fn(() => false),
 }));
 vi.mock('../../lib/collections-client', () => ({
   listCollections: M.list,
   deleteCollection: M.del,
+  touchCollection: M.touch,
   saveCollection: vi.fn(),
 }));
 vi.mock('../../lib/tabs', () => ({ openCollection: M.openCollection, isTabSwitchBlocked: M.blocked }));
@@ -86,6 +88,35 @@ describe('CollectionsList', () => {
     await waitFor(() => expect(screen.getByText(/강의 묶음/)).toBeTruthy());
     await user.click(screen.getByRole('button', { name: '열기' }));
     expect(M.openCollection).toHaveBeenCalledWith(['c1-0', 'c1-1', 'c1-2']);
+  });
+
+  // lastAccessed 는 목록 정렬 키이자 LRU 축출 키인데 갱신 지점이 저장뿐이었다 → 매일 열지만
+  // 편집하지 않는 컬렉션이 상한에서 먼저 축출된다(collections.json 은 유일 사본, 회수 불가).
+  it('열기 성공 → 최근 사용 표시(touch) 호출', async () => {
+    const user = userEvent.setup();
+    render(<CollectionsList />);
+    await waitFor(() => expect(screen.getByText(/강의 묶음/)).toBeTruthy());
+    await user.click(screen.getByRole('button', { name: '열기' }));
+    await waitFor(() => expect(M.touch).toHaveBeenCalledWith('c1'));
+  });
+
+  it('부분 복원도 사용으로 친다 (touch 호출)', async () => {
+    M.openCollection.mockResolvedValue({ opened: 2, total: 3 });
+    const user = userEvent.setup();
+    render(<CollectionsList />);
+    await waitFor(() => expect(screen.getByText(/강의 묶음/)).toBeTruthy());
+    await user.click(screen.getByRole('button', { name: '열기' }));
+    await waitFor(() => expect(M.touch).toHaveBeenCalledWith('c1'));
+  });
+
+  it('전원 복원 실패면 touch 하지 않는다 (실패한 열기로 LRU 순서를 바꾸지 않는다)', async () => {
+    M.openCollection.mockResolvedValue({ opened: 0, total: 2 });
+    const user = userEvent.setup();
+    render(<CollectionsList />);
+    await waitFor(() => expect(screen.getByText(/강의 묶음/)).toBeTruthy());
+    await user.click(screen.getByRole('button', { name: '열기' }));
+    await waitFor(() => expect(useAppStore.getState().error?.code).toBe('COLLECTION_OPEN_FAIL'));
+    expect(M.touch).not.toHaveBeenCalled();
   });
 
   // QA22(백로그): 연 컬렉션의 출처를 기록해야 CollectionBar 의 재저장이 신규 항목이 아니라

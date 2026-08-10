@@ -163,6 +163,7 @@ interface CollectionSummary {
 | `collections:list` | — | `SavedCollection[]` | lastAccessed desc |
 | `collections:save` | `{ id?, name, docHashes }` | `{ ok, id }` | upsert(id 없으면 생성) + 원자적 쓰기 |
 | `collections:delete` | `id: string` | `{ ok }` | 항목 제거 |
+| `collections:touch` | `id: string` | `{ ok }` | 열기 시 lastAccessed 갱신(없는 id 는 `{ok:false}` + 미기록) |
 
 - 검증: docHashes 각 항목 `/^[a-f0-9]{64}$/`, name 길이 캡(예 200), 항목 수 캡(LRU). 경로 traversal 없음(단일 파일).
 - 저장 실패는 best-effort(`{ ok:false }` + warn). 로드 실패 → 빈 목록(fail-safe).

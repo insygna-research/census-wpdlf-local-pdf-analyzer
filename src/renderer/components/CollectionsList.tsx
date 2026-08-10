@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { useT } from '../lib/i18n';
 import { useAppStore } from '../lib/store';
-import { listCollections, deleteCollection } from '../lib/collections-client';
+import { listCollections, deleteCollection, touchCollection } from '../lib/collections-client';
 import { openCollection, isTabSwitchBlocked } from '../lib/tabs';
 import type { SavedCollection } from '../../shared/collection-types';
 
@@ -51,6 +51,9 @@ export function CollectionsList() {
     setBusy(c.id);
     try {
       const { opened, total } = await openCollection(c.docHashes);
+      // 최근 사용 표시 — fire-and-forget(열기를 지연시키지 않는다). 부분 복원도 "사용" 으로 친다.
+      // 하나도 열리지 않았으면 갱신하지 않는다: 실패한 열기로 LRU 순서를 바꿀 이유가 없다.
+      if (opened > 0) void touchCollection(c.id);
       if (opened === 0) {
         useAppStore.getState().setError({ code: 'COLLECTION_OPEN_FAIL', message: tr('collection.openFail') });
       } else if (opened === total) {

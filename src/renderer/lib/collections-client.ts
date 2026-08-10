@@ -22,3 +22,11 @@ export function saveCollection(
 export function deleteCollection(id: string): Promise<{ ok: boolean }> {
   return window.electronAPI.collections.delete(id).catch(() => ({ ok: false }));
 }
+
+/**
+ * 열기 시 최근 사용 표시. **fire-and-forget 으로 부르라** — 실패해도 열기 결과에 영향을 주지 않는다.
+ * 없으면 목록 정렬·LRU 축출이 "최근 편집순" 이 된다(collections-store 의 touchCollection 주석).
+ */
+export function touchCollection(id: string): Promise<{ ok: boolean }> {
+  return window.electronAPI.collections.touch(id).catch(() => ({ ok: false }));
+}

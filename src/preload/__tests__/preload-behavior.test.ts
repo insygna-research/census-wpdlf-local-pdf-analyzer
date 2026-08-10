@@ -141,6 +141,7 @@ describe('invoke 래퍼 — 채널 + 인자 전달', () => {
     a.collections.list();
     a.collections.save({ name: 'C', docHashes: ['h1'] });
     a.collections.delete('cid');
+    a.collections.touch('cid');
     expect(H.invoke).toHaveBeenCalledWith('session:load', 'hash1');
     expect(H.invoke).toHaveBeenCalledWith('session:save', payload);
     expect(H.invoke).toHaveBeenCalledWith('session:saveSummary', expect.objectContaining({ docHash: 'h', type: 'full' }));
@@ -151,6 +152,7 @@ describe('invoke 래퍼 — 채널 + 인자 전달', () => {
     expect(H.invoke).toHaveBeenCalledWith('collections:list');
     expect(H.invoke).toHaveBeenCalledWith('collections:save', { name: 'C', docHashes: ['h1'] });
     expect(H.invoke).toHaveBeenCalledWith('collections:delete', 'cid');
+    expect(H.invoke).toHaveBeenCalledWith('collections:touch', 'cid');
   });
 
   it('invoke 반환값을 그대로 passthrough', () => {

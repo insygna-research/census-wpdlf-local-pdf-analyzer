@@ -27,7 +27,7 @@ vi.mock('fs/promises', () => {
   };
 });
 
-import { listCollections, saveCollection, deleteCollection } from '../collections-store';
+import { listCollections, saveCollection, deleteCollection, touchCollection } from '../collections-store';
 
 const FILE = '/tmp/collections.json';
 const H = (c: string) => c.repeat(64); // 유효 docHash 헬퍼 (hex 64자)
@@ -141,6 +141,67 @@ describe('saveCollection', () => {
     expect(file.collections.length).toBe(COLLECTION_MAX_COUNT);
     // 동률이어도 방금 저장한 newest 는 살아있어야 함(ok:true 인데 디스크엔 없는 문제 차단)
     expect(file.collections.some((c) => c.id === r.id && c.name === 'newest')).toBe(true);
+  });
+});
+
+// lastAccessed 는 목록 정렬 키인 **동시에 LRU 축출 키**인데, 갱신 지점이 saveCollection 하나뿐이라
+// 순서가 "최근 연 순" 이 아니라 "최근 편집한 순" 이었다(세션은 load 시 touchSession 으로 갱신 —
+// 형제 스토어 중 여기만 빠져 있었다). 매일 열지만 멤버를 바꾸지 않는 컬렉션이 상한에서 먼저
+// 축출되고, collections.json 은 유일 사본이라 회수 경로가 없다.
+describe('touchCollection', () => {
+  it('편집 없이 열기만으로 목록 최상단이 된다', async () => {
+    const a = await saveCollection(FILE, { name: 'A', docHashes: [H('a')] }, T0);
+    await saveCollection(FILE, { name: 'B', docHashes: [H('b')] }, T0 + 1000);
+    expect((await listCollections(FILE)).map((c) => c.name)).toEqual(['B', 'A']);
+
+    expect(await touchCollection(FILE, a.id!, T0 + 2000)).toEqual({ ok: true });
+    expect((await listCollections(FILE)).map((c) => c.name)).toEqual(['A', 'B']);
+  });
+
+  it('멤버·이름·createdAt 은 건드리지 않는다 (lastAccessed 만 갱신)', async () => {
+    const r = await saveCollection(FILE, { name: '원본', docHashes: [H('a'), H('b')] }, T0);
+    const before = readFile().collections[0]!;
+    await touchCollection(FILE, r.id!, T0 + 5000);
+    const after = readFile().collections[0]!;
+    expect(after).toEqual({ ...before, lastAccessed: new Date(T0 + 5000).toISOString() });
+  });
+
+  it('touch 한 컬렉션은 상한 초과 축출에서 살아남는다 (이 수정의 본래 목적)', async () => {
+    const hashFor = (i: number) => i.toString(16).padStart(2, '0').repeat(32);
+    const oldest = await saveCollection(FILE, { name: 'daily', docHashes: [hashFor(0)] }, T0);
+    for (let i = 1; i < COLLECTION_MAX_COUNT; i++) {
+      await saveCollection(FILE, { name: `c${i}`, docHashes: [hashFor(i)] }, T0 + i * 1000);
+    }
+    // 편집은 하지 않고 열기만 한 상태 — 가장 최근 사용이 된다.
+    await touchCollection(FILE, oldest.id!, T0 + 500_000);
+    // 상한을 넘기는 신규 저장 → 축출 대상은 daily 가 아니라 그 다음으로 오래된 c1 이어야 한다.
+    const r = await saveCollection(FILE, { name: 'new', docHashes: [hashFor(90)] }, T0 + 600_000);
+    expect(r.evicted).toEqual(['c1']);
+    expect(readFile().collections.some((c) => c.name === 'daily')).toBe(true);
+  });
+
+  it('없는 id 는 ok:false + 디스크를 다시 쓰지 않는다', async () => {
+    await saveCollection(FILE, { name: 'x', docHashes: [H('a')] }, T0);
+    const before = V.files.get(FILE);
+    expect(await touchCollection(FILE, 'nonexistent', T0 + 1000)).toEqual({ ok: false });
+    expect(V.files.get(FILE)).toBe(before);
+  });
+
+  it('빈/비문자열 id 는 거부', async () => {
+    expect(await touchCollection(FILE, '', T0)).toEqual({ ok: false });
+    expect(await touchCollection(FILE, null, T0)).toEqual({ ok: false });
+  });
+
+  it('일시 I/O 오류면 ok:false + 디스크 보존 (전량 소실 금지)', async () => {
+    const r = await saveCollection(FILE, { name: 'keep', docHashes: [H('a')] }, T0);
+    const before = readFile();
+    const fsp = (await import('fs/promises')).default;
+    const ebusy = new Error('EBUSY') as NodeJS.ErrnoException;
+    ebusy.code = 'EBUSY';
+    (fsp.readFile as ReturnType<typeof vi.fn>).mockRejectedValueOnce(ebusy);
+
+    expect(await touchCollection(FILE, r.id!, T0 + 1000)).toEqual({ ok: false });
+    expect(readFile()).toEqual(before);
   });
 });
 

@@ -744,7 +744,7 @@ describe('collections:* 핸들러', () => {
   const H64 = 'a'.repeat(64);
 
   it('등록됨', () => {
-    for (const ch of ['collections:list', 'collections:save', 'collections:delete']) {
+    for (const ch of ['collections:list', 'collections:save', 'collections:delete', 'collections:touch']) {
       expect(H.handlers.has(ch), `${ch} 미등록`).toBe(true);
     }
   });
@@ -767,5 +767,12 @@ describe('collections:* 핸들러', () => {
 
   it('delete: 위임되어 ok 반환', async () => {
     expect(await invoke('collections:delete', 'some-id')).toEqual({ ok: true });
+  });
+
+  // 저장돼 있지 않은 id 를 ok 로 돌려주면 렌더러가 갱신됐다고 오인한다. (여기 harness 는 readFile
+  // 이 항상 ENOENT라 저장 왕복이 성립하지 않는다 — 갱신 성공 경로는 collections-store L1 이 검증)
+  it('touch: 저장돼 있지 않은 id / 비문자열은 ok:false (무음 성공 금지)', async () => {
+    expect(await invoke('collections:touch', 'nope')).toEqual({ ok: false });
+    expect(await invoke('collections:touch', null)).toEqual({ ok: false });
   });
 });
